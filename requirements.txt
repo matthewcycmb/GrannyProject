@@ -1,0 +1,12 @@
+# HTTPS certificate roots for Python installations without a default CA bundle.
+certifi>=2024.2.2
+# Use the macOS CPU workaround documented in upstream issue #6356.
+mediapipe==0.10.21
+opencv-contrib-python>=4.10,<4.12
+vosk>=0.3.42,<0.4
+sounddevice>=0.5,<0.6
+# Existing transitive dependency, used directly for opt-in ElevenLabs recognition.
+websockets>=15,<18
+# Signed Twilio callbacks and listen-only call audio, on a separate endpoint.
+aiohttp>=3.12,<4
+twilio>=9,<10

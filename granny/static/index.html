@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Granny Project · Live monitor</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/steps.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Granny Project home"><span class="brand-icon">g.</span><span>Granny Project<small>A LITTLE CLOSER, EVEN FROM AFAR</small></span></a>
+    <span id="connection" class="pill muted"><span class="dot"></span>Connecting</span>
+  </header>
+  <main>
+    <div id="connection-warning" class="warning" role="alert" hidden>Monitor disconnected. Camera and status may be out of date. Check the Terminal running Granny Project.</div>
+    <div class="monitor-grid">
+      <section class="card camera-card" aria-labelledby="camera-title">
+        <div class="card-heading"><h2 id="camera-title"><span class="dot teal"></span>Camera view</h2><span id="fps" class="caption">Waiting for camera</span></div>
+        <div class="camera-stage"><img id="camera-feed" alt="Live camera view with pose tracking" hidden><div id="camera-placeholder" class="placeholder"><span class="camera-symbol">◉</span><strong>Waiting for your camera</strong><span>Camera access is managed by the app running in Terminal.</span></div><span id="calibration-badge" class="camera-label">Calibration needed</span></div>
+        <div class="camera-footer"><span id="camera-status">Starting camera…</span><span class="caption">Processed on this Mac</span></div>
+      </section>
+      <section class="card status-card" aria-labelledby="status-title">
+        <div class="card-heading"><h2 id="status-title">Right now</h2><span class="caption">LIVE STATUS</span></div>
+        <div class="state-block" id="state-block"><span class="eyebrow">MONITOR</span><h3 id="state">Starting up</h3><p id="state-description">Loading the local monitor.</p><div id="countdown" hidden><strong id="seconds">45</strong><span>seconds until alert</span></div></div>
+        <ul class="checklist" aria-label="Response progress" aria-live="polite">
+          <li id="step-voice" class="step waiting"><span class="step-mark" aria-hidden="true">○</span><span class="step-name">Voice check</span><span class="step-status">Waiting</span></li>
+          <li id="step-telegram" class="step waiting"><span class="step-mark" aria-hidden="true">○</span><span class="step-name">Notify family</span><span class="step-status">Waiting</span></li>
+          <li id="step-calls" class="step waiting"><span class="step-mark" aria-hidden="true">○</span><span class="step-name">Call family</span><span class="step-status">Waiting</span></li>
+        </ul>
+        <p id="family-confirmation" class="confirmation-note" hidden></p>
+        <details class="check-details"><summary>Details</summary><div class="status-detail"><div><h4>Camera and body tracking</h4><p id="tracking-detail">Waiting for camera</p></div></div><div class="status-detail"><div><h4>Voice</h4><p id="audio-status">Waiting for the monitor</p><p id="heard" class="heard"></p></div></div><div class="status-detail"><div><h4>Delivery</h4><p id="alert-status">No incident</p></div></div></details>
+        <p id="voice-backup" class="quiet-note" role="status">Starting voice backup…</p>
+      </section>
+    </div>
+    <section class="card controls" aria-labelledby="controls-title"><div class="controls-heading"><div><h2 id="controls-title">Demo controls</h2><p>Start with calibration, or rehearse a voice check at any time.</p></div><span class="caption">ONE PERSON · FIXED CAMERA</span></div><div class="buttons">
+      <button data-action="calibrate" class="primary" disabled><span>◎</span> Calibrate (5s)</button>
+      <button data-action="simulate" disabled><span>▷</span> Simulate fall</button>
+      <span class="button-divider"></span>
+      <button data-action="okay" class="okay" disabled>I’m okay</button>
+      <button data-action="help" class="help" disabled>Help</button>
+      <button data-action="stop_voice" disabled>Stop voice</button>
+      <button data-action="stop_call_audio" disabled>Mute call audio</button>
+      <button data-action="reset" class="reset" disabled>↻ Reset</button>
+    </div><p id="action-message" role="status" aria-live="polite">Click Calibrate, then use the five-second countdown to stand upright with your head and feet visible.</p></section>
+    <section class="card deliveries" aria-labelledby="delivery-title">
+      <div class="card-heading"><h2 id="delivery-title">Family alerts</h2><span id="notification-mode" class="caption">Connecting…</span></div>
+      <p id="mode-note" class="delivery-note">Waiting for the monitor.</p>
+      <div class="delivery-grid">
+        <section class="delivery-channel" aria-labelledby="telegram-title"><div class="channel-heading"><span class="channel-icon">↗</span><div><h3 id="telegram-title">Telegram photo</h3><p>Photo and message to your family</p></div><span id="telegram-state" class="channel-state">Ready</span></div><div id="telegram-progress" class="recipient-list" aria-live="polite"></div></section>
+        <section class="delivery-channel" aria-labelledby="calls-title"><div class="channel-heading"><span class="channel-icon">☎</span><div><h3 id="calls-title">Family phone calls</h3><p>Dialing → ringing → connected</p></div><span id="calls-state" class="channel-state">Ready</span></div><div id="calls-progress" class="recipient-list" aria-live="polite"></div></section>
+      </div>
+      <p id="call-mode-note" class="delivery-note">A connected call does not mean someone is coming. Their confirmation appears separately.</p>
+    </section>
+    <div class="bottom-grid"><section class="guide"><p class="eyebrow">A CHECK-IN, STEP BY STEP</p><ol><li><span>01</span><div><strong>Get the full picture</strong><p>Keep one person’s full body and the floor in view. Calibrate again if you move the camera.</p></div></li><li><span>02</span><div><strong>Let Granny ask</strong><p>Click Simulate fall to hear “Are you okay?” Say “I am okay” to cancel, or “help” to alert.</p></div></li><li><span>03</span><div><strong>Reach someone who cares</strong><p>Help or no clear response triggers an alert. Telegram sends a photo only when enabled.</p></div></li></ol></section><section class="card activity"><div class="card-heading"><h2>Session activity</h2><span class="caption">THIS BROWSER TAB</span></div><ol id="activity"><li class="empty-event">Events will appear here as you use the monitor.</li></ol></section></div>
+    <footer><span>Granny Project <span class="footer-dot">·</span> Hackathon prototype</span><span>Demo detection · No emergency calls · Keep Terminal open</span></footer>
+  </main>
+</body>
+</html>

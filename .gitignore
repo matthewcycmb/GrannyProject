@@ -1,0 +1,9 @@
+.granny/
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+.DS_Store
+esp32/.pio/
+esp32/include/secrets.h
