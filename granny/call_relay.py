@@ -50,8 +50,6 @@ class Session:
     status_sequence: int = -1
     attempt: int = 1
     terminal_status: str = ""
-    machine_detected: bool = False
-    machine_hangup_requested: bool = False
 
     def update(self, **fields):
         self.progress.update(self.incident, "calls", self.number, attempt=self.attempt, **fields)
@@ -89,7 +87,6 @@ class CallRelay:
         app = web.Application(client_max_size=16_384)
         app.router.add_post("/call/{token}/reply/{round}", self.reply)
         app.router.add_post("/call/{token}/status", self.status)
-        app.router.add_post("/call/{token}/machine", self.machine)
         app.router.add_get("/call/{token}/audio", self.audio)
         return app
 
@@ -161,8 +158,6 @@ class CallRelay:
             "Twiml": self.initial_xml(session, reason), "Timeout": 20, "TimeLimit": 120,
             "StatusCallback": self.url(session, "status"), "StatusCallbackMethod": "POST",
             "StatusCallbackEvent": ["initiated", "ringing", "answered", "completed"],
-            "MachineDetection": "Enable", "AsyncAmd": "true", "MachineDetectionTimeout": 10,
-            "AsyncAmdStatusCallback": self.url(session, "machine"), "AsyncAmdStatusCallbackMethod": "POST",
         })
         with self.lock:
             self.bind(session, self.config["account_sid"], result.get("sid", ""))
@@ -197,9 +192,14 @@ class CallRelay:
         ET.SubElement(parent, "Say", CALL_VOICE).text = text
 
     def gather(self, root, session, round_number, text):
-        gather = ET.SubElement(root, "Gather", input="speech dtmf", numDigits="1", timeout="8",
-                               speechModel="phone_call", speechTimeout="2", actionOnEmptyResult="true", method="POST",
+        # The first and final prompts accept buttons without room noise interrupting speech.
+        inputs = "speech dtmf" if round_number == 1 else "dtmf"
+        gather = ET.SubElement(root, "Gather", input=inputs, numDigits="1", timeout="12",
+                               actionOnEmptyResult="true", method="POST",
                                action=self.url(session, f"reply/{round_number}"), language="en-US")
+        if "speech" in inputs:
+            gather.set("speechModel", "phone_call")
+            gather.set("speechTimeout", "2")
         self.say(gather, text)
         ET.SubElement(root, "Hangup")  # A failed callback never loops into another call.
 
@@ -211,8 +211,8 @@ class CallRelay:
         disclosure = f" This call may be played live beside {PERSON_NAME}." if self.stream_audio else ""
         self.say(root, alert_summary(reason) + " Emergency services have not been called." + disclosure)
         self.gather(root, session, 0, f"Can you go and check on {PERSON_NAME} now? "
-                    "You can say, yes, I'm coming, or, I can't come. "
-                    "You can also press 1 to confirm you're coming, or press 2 if you can't come.")
+                    "Press 1 to confirm you're coming, or press 2 if you can't come. "
+                    "If you prefer to answer by voice, stay on the line for the next question.")
         return ET.tostring(root, encoding="unicode")
 
     def next_xml(self, session, round_number, fields):
@@ -226,9 +226,7 @@ class CallRelay:
         response = ({"1": "coming", "2": "unavailable"}.get(digit, "pending") if digit
                     else family_response(fields.get("SpeechResult", ""), fields.get("Confidence")))
         root = ET.Element("Response")
-        if session.machine_detected and digit not in {"1", "2"}:
-            session.confirmation = "no-response"
-        elif response == "unavailable":
+        if response == "unavailable":
             session.confirmation = "unavailable"
             self.say(root, "Thanks for letting me know you can't come. "
                            f"Please ask another family member to check on {PERSON_NAME}.")
@@ -241,9 +239,11 @@ class CallRelay:
             self.say(root, f"I haven't received a confirmation. Please check on {PERSON_NAME} as soon as you can.")
         else:
             session.round += 1
-            prompt = (f"I didn't catch a clear answer. Are you able to come and check on {PERSON_NAME}? "
-                      "Please say, I'm coming, or, I can't come. "
-                      "Or press 1 if you're coming, or 2 if you can't come.")
+            prompt = ((f"Are you able to come and check on {PERSON_NAME}? "
+                       "Please say, I'm coming, or, I can't come. "
+                       "Or press 1 if you're coming, or 2 if you can't come.") if session.round == 1 else
+                      "I didn't catch a clear answer. Please use your phone keypad. "
+                      "Press 1 to confirm you're coming, or press 2 if you can't come.")
             self.gather(root, session, session.round, prompt)
         if session.confirmation != "pending":
             ET.SubElement(root, "Hangup")
@@ -258,7 +258,7 @@ class CallRelay:
             raise web.HTTPForbidden()
         session.sid = sid
 
-    async def authenticated(self, request, socket=False, machine=False):
+    async def authenticated(self, request, socket=False):
         fields = {} if socket else await request.post()
         # Reject duplicates, query strings, and never trust the request's Host header.
         if request.query_string or len(fields) != len(set(fields.keys())):
@@ -273,7 +273,7 @@ class CallRelay:
             if session is None or time.monotonic() - session.created >= 300:
                 raise web.HTTPNotFound()
             if not socket:
-                if (not machine or "To" in fields) and fields.get("To") != session.number:
+                if fields.get("To") != session.number:
                     raise web.HTTPForbidden()
                 self.bind(session, fields.get("AccountSid", ""), fields.get("CallSid", ""))
         return session, fields
@@ -299,31 +299,6 @@ class CallRelay:
             if status in CALL_DETAILS and sequence > session.status_sequence:
                 session.status_sequence = sequence
                 self.apply_status(session, status)
-        return web.Response(status=204)
-
-    async def machine(self, request):
-        # AMD sends account/call IDs, but does not guarantee a To field.
-        session, fields = await self.authenticated(request, machine=True)
-        if fields.get("AnsweredBy") not in {"machine_start", "machine_end_beep", "machine_end_silence",
-                                            "machine_end_other", "fax"}:
-            return web.Response(status=204)
-        with self.lock:
-            if session.terminal_status or session.confirmation in {"coming", "unavailable"} or session.machine_hangup_requested:
-                return web.Response(status=204)
-            session.machine_detected = True
-            session.machine_hangup_requested = True
-            session.confirmation = "no-response"
-            session.update(confirmation="no-response", detail="Voicemail detected; ending this call before retrying")
-        try:
-            result = await asyncio.to_thread(self.client.api, f"Calls/{session.sid}", {"Status": "completed"})
-        except TwilioError:
-            with self.lock:
-                session.machine_hangup_requested = False
-            # The call may have ended despite a timeout. Status polling decides when retrying is safe.
-            return web.Response(status=503)
-        with self.lock:
-            if result.get("sid") == session.sid:
-                self.apply_status(session, result.get("status"))
         return web.Response(status=204)
 
     async def audio(self, request):

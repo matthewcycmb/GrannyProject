@@ -48,7 +48,7 @@ class CallClientTests(unittest.TestCase):
         method, fields = api.call_args.args
         self.assertEqual(method, "Calls")
         xml = ElementTree.fromstring(fields["Twiml"])
-        self.assertTrue(xml.find("Say").text.startswith("Matthew has asked for help."))
+        self.assertTrue(xml.find("Say").text.startswith("Matthew has asked for help"))
         self.assertNotIn("demo", xml.find("Say").text.lower())
         self.assertNotIn("fall", xml.find("Say").text.lower())
         self.assertEqual(xml.find("Say").get("voice"), "Polly.Joanna-Neural")

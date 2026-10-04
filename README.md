@@ -240,19 +240,19 @@ listening pause**, with an alert **45 seconds after the first prompt finishes**.
 that deadline; a failed initial prompt is capped at 60 seconds from the check starting.
 
 With `--listen-calls`, an automated phone conversation asks the contact whether they can come.
-They can say **“Yes, I'm coming”**, **“I'm on my way”**, or **“I can't come”**. For a noisy room,
-the second option is **press 1 to confirm** or **press 2 if they cannot come**. A keypad response
-takes priority over speech received in the same callback. Twilio transcribes spoken replies using its
-phone-call speech model; the app accepts a clear
-commitment and asks again for uncertain or low-confidence replies. After three unclear/silent replies,
-the call ends without claiming anyone is coming. This is a focused speech-confirmation conversation;
-a commitment is not proof of arrival.
+The call explains what happened, then asks the contact to **press 1 to confirm they are coming**
+or **press 2 if they cannot come**. The first prompt waits 12 seconds after speaking and listens only
+for buttons, so background conversation cannot cut it short. If no key is pressed, the next prompt also
+accepts **“I'm coming”** or **“I can't come”**. A final prompt uses buttons again for noisy rooms.
+Three unanswered/unclear prompts end the call without claiming someone is coming; a commitment is
+not proof of arrival. Fall-related help retains the detected fall context. “Can't get up” is reported
+when the person actually says it; a standalone help request does not claim a confirmed fall.
 
 Declined, unanswered, busy, failed, cancelled, or ended calls without a clear response are retried after **6 seconds**.
 The pause begins once Twilio confirms the previous call ended; carrier signaling and ringing can add time.
-[Twilio answering-machine detection](https://www.twilio.com/docs/voice/answering-machine-detection)
-runs in the background and ends detected voicemail calls so they can retry sooner. It can misclassify
-voicemail; unknown results continue to the spoken check. Retries continue while the incident is active.
+Automatic voicemail hangup is disabled: during the live demo, machine detection misclassified answered
+calls and ended them before confirmation. Calls now complete their confirmation prompts; unanswered
+or unconfirmed calls retry after their confirmed ending. Retries continue while the incident is active.
 A contact who says they cannot come or presses 2 is not called again;
 when any contact confirms they are coming, all further retries stop. **Reset** or quitting the app also
 stops retries, while calls already submitted may finish. Telegram messages are still sent once per

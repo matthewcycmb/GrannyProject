@@ -197,7 +197,17 @@ class Monitor:
         if self.state != State.CHECKING:
             self.incident_id = uuid.uuid4().hex
             self._check_started = now
-        return self._alert("Person requested help")
+        return self._alert(self._help_reason())
+
+    def _help_reason(self, text=""):
+        during_fall_check = self.state == State.CHECKING
+        cannot_get_up = re.fullmatch(
+            r"(?:help(?: me)? )?i cannot (?:get|stand) up(?: please(?: help(?: me)?)?)?",
+            normalize_speech(text))
+        if cannot_get_up:
+            return ("Possible fall; person said they cannot get up" if during_fall_check
+                    else "Person said they cannot get up")
+        return "Possible fall; person requested help" if during_fall_check else "Person requested help"
 
     def prompt_finished(self, now, incident_id):
         if self.state != State.CHECKING or incident_id != self.incident_id:
@@ -214,7 +224,7 @@ class Monitor:
             return self._alert("No clear response before the deadline")
         response = classify_response(text, confidence)
         if response == Response.HELP:
-            return self._alert("Person requested help")
+            return self._alert(self._help_reason(text))
         if response == Response.OK:
             self.state = State.COOLDOWN
             self.reason = "Person said I am okay"

@@ -107,6 +107,23 @@ class MonitorTests(unittest.TestCase):
         incident = self.monitor.begin_check(0)[0].incident_id
         self.assertEqual(self.monitor.respond("i am not okay", .95, 2, incident)[0].kind, "alert")
 
+    def test_detected_fall_context_survives_help_reply(self):
+        actions = observe_for(self.monitor, FLOOR, 0, 5)
+        self.assertEqual(actions[-1].kind, 'prompt')
+        action = self.monitor.respond('help', 1, 6, self.monitor.incident_id)[0]
+        self.assertEqual(action.reason, 'Possible fall; person requested help')
+
+    def test_explicit_cannot_get_up_is_preserved_for_the_family(self):
+        self.monitor.begin_check(0)
+        action = self.monitor.respond("I can't get up", 1, 1, self.monitor.incident_id)[0]
+        self.assertEqual(action.reason, 'Possible fall; person said they cannot get up')
+
+    def test_help_button_during_fall_check_keeps_context_but_standalone_does_not(self):
+        self.monitor.begin_check(0)
+        self.assertEqual(self.monitor.request_help(1)[0].reason, 'Possible fall; person requested help')
+        self.monitor.reset()
+        self.assertEqual(self.monitor.request_help(2)[0].reason, 'Person requested help')
+
     def test_stale_speech_from_previous_incident_is_ignored(self):
         previous = self.monitor.begin_check(0)[0].incident_id
         self.monitor.reset()

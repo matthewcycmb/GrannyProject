@@ -51,7 +51,7 @@ class DashboardCommandTests(unittest.TestCase):
         self.assertEqual(self.command("help", now=3), 409)
         self.assertEqual(self.command("simulate", now=3), 409)
         self.alerts.submit.assert_called_once_with(self.controller.monitor.incident_id,
-                                                  b"incident photo", "Person requested help")
+                                                  b"incident photo", "Possible fall; person requested help")
 
     def test_old_tab_cannot_reset_or_cancel_new_incident(self):
         self.command("simulate")

@@ -17,8 +17,17 @@ PERSON_NAME = "Matthew"
 
 def alert_summary(reason):
     """Describe the observed trigger without inventing an injury or a fall."""
+    if reason == "Possible fall; person said they cannot get up":
+        return (f"{PERSON_NAME} may have fallen and says he can't get up. "
+                "He needs your help now. Please go and check on him right away.")
+    if reason == "Person said they cannot get up":
+        return f"{PERSON_NAME} says he can't get up and needs your help. Please go and check on him right away."
+    if reason == "Possible fall; person requested help":
+        return (f"{PERSON_NAME} may have fallen. Granny started a check-in, and he asked for help. "
+                "Please go and check on him right away.")
     if reason == "Person requested help":
-        return f"{PERSON_NAME} has asked for help. Please check on {PERSON_NAME} right away."
+        return (f"{PERSON_NAME} has asked for help and needs someone to check on him immediately. "
+                "Please go to him and make sure he is safe.")
     if reason == "No clear response before the deadline":
         return (f"{PERSON_NAME} may have fallen. Granny asked if {PERSON_NAME} was okay, "
                 f"but didn't get a clear response. Please check on {PERSON_NAME} now.")

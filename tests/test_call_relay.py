@@ -65,25 +65,48 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Record", fields)
         self.assertEqual(fields["TimeLimit"], 120)
         self.assertIn("played live", root.find("Say").text)
-        self.assertTrue(root.find("Say").text.startswith("Matthew has asked for help."))
+        self.assertTrue(root.find("Say").text.startswith("Matthew has asked for help"))
         self.assertNotIn('demo', ' '.join(root.itertext()).lower())
         self.assertTrue(all(say.get('voice') == 'Polly.Joanna-Neural' for say in root.iter('Say')))
-        self.assertEqual(fields['MachineDetection'], 'Enable')
-        self.assertEqual(fields['AsyncAmd'], 'true')
-        self.assertEqual(fields['AsyncAmdStatusCallback'], self.relay.url(self.session, 'machine'))
+        self.assertNotIn('MachineDetection', fields)
+        self.assertNotIn('AsyncAmdStatusCallback', fields)
         self.assertNotIn('your loved one', ' '.join(root.itertext()).lower())
 
     async def test_silence_call_explains_fall_then_asks_for_confirmation(self):
         root = ET.fromstring(self.relay.initial_xml(self.session, "No clear response before the deadline"))
         self.assertTrue(root.find('Say').text.startswith('Matthew may have fallen.'))
         self.assertIn("didn't get a clear response", root.find('Say').text)
-        self.assertIn("I'm coming", root.find('Gather/Say').text)
-        self.assertEqual(root.find('Gather').get('input'), 'speech dtmf')
+        self.assertIn("Press 1", root.find('Gather/Say').text)
+        self.assertEqual(root.find('Gather').get('input'), 'dtmf')
         self.assertEqual(root.find('Gather').get('numDigits'), '1')
-        self.assertEqual(root.find('Gather').get('speechTimeout'), '2')
+        self.assertEqual(root.find('Gather').get('timeout'), '12')
         self.assertIn("press 1 to confirm", ' '.join(root.itertext()).lower())
         self.assertIn("press 2", ' '.join(root.itertext()).lower())
         self.assertNotIn('demo', ' '.join(root.itertext()).lower())
+
+    async def test_fall_and_cannot_get_up_reach_the_call_then_keypad_confirms(self):
+        from granny.core import Monitor
+        monitor = Monitor()
+        monitor.begin_check(0)
+        action = monitor.respond("I can't get up", 1, 1, monitor.incident_id)[0]
+        root = ET.fromstring(self.relay.initial_xml(self.session, action.reason))
+        self.assertIn("Matthew may have fallen and says he can't get up", root.find('Say').text)
+        self.assertIn('Press 1 to confirm', root.find('Gather/Say').text)
+        self.assertEqual(root.find('Gather').get('input'), 'dtmf')
+        response = await self.post(self.path('reply/0'), self.fields(Digits='1'))
+        self.assertEqual(response.status, 200)
+        self.assertEqual(self.row()['confirmation'], 'coming')
+
+    async def test_no_button_opens_voice_option_then_returns_to_noise_safe_keypad(self):
+        response = await self.post(self.path('reply/0'), self.fields())
+        xml = ET.fromstring(await response.text())
+        self.assertEqual(xml.find('Gather').get('input'), 'speech dtmf')
+        self.assertEqual(xml.find('Gather').get('speechTimeout'), '2')
+        response = await self.post(self.path('reply/1'), self.fields(SpeechResult='unrelated room conversation'))
+        xml = ET.fromstring(await response.text())
+        self.assertEqual(xml.find('Gather').get('input'), 'dtmf')
+        response = await self.post(self.path('reply/2'), self.fields(Digits='1'))
+        self.assertEqual(self.row()['confirmation'], 'coming')
 
     async def test_trial_mode_preserves_confirmation_without_unsupported_stream(self):
         self.relay.stream_audio = False
@@ -116,14 +139,15 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.row()["confirmation"], "pending")
 
     async def test_verbal_commitment_confirms_and_callback_retry_is_idempotent(self):
+        await self.post(self.path("reply/0"), self.fields())
         fields = self.fields(SpeechResult="Yes I'm coming", Confidence="0.93")
-        response = await self.post(self.path("reply/0"), fields)
+        response = await self.post(self.path("reply/1"), fields)
         first = await response.text()
         self.assertEqual(response.status, 200)
         self.assertEqual(self.row()["confirmation"], "coming")
         self.assertIn("let Matthew know you're coming", first)
         self.assertNotIn("press", first.lower())
-        replay = await self.post(self.path("reply/0"), fields)
+        replay = await self.post(self.path("reply/1"), fields)
         self.assertEqual(await replay.text(), first)
 
     async def test_uncertain_or_low_confidence_reply_repeats_speech_and_keypad_options(self):
@@ -132,7 +156,6 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             response = await self.post(self.path(f"reply/{index}"), fields)
             text = await response.text()
             self.assertEqual(self.row()["confirmation"], "pending")
-            self.assertIn("I didn't catch a clear answer", text)
             self.assertIn("press 1", text.lower())
 
     async def test_keypad_one_confirms_despite_conflicting_room_noise(self):
@@ -150,11 +173,6 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         await self.post(self.path('machine'), self.machine_fields())
         self.client.api.assert_not_called()
         self.assertEqual(self.row()['confirmation'], 'unavailable')
-
-    async def test_explicit_keypress_overrides_a_false_machine_detection(self):
-        self.session.machine_detected = True
-        await self.post(self.path('reply/0'), self.fields(Digits='1'))
-        self.assertEqual(self.row()['confirmation'], 'coming')
 
     async def test_other_keys_never_confirm_and_repeat_the_options(self):
         for index, digit in enumerate(('3', '0', '12')):
@@ -194,48 +212,14 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         return {'AccountSid': CONFIG['account_sid'], 'CallSid': CALL['sid'],
                 'AnsweredBy': answered, 'MachineDetectionDuration': '2100'}
 
-    async def test_voicemail_ends_call_once_and_allows_normal_retry(self):
+    async def test_machine_guess_cannot_end_a_live_call_before_keypad_prompt(self):
         self.client.api.reset_mock()
-        self.client.api.return_value = {'sid': CALL['sid'], 'status': 'completed'}
-        fields = self.machine_fields()
-        response = await self.post(self.path('machine'), fields)
-        self.assertEqual(response.status, 204)
-        self.client.api.assert_called_once_with('Calls/' + CALL['sid'], {'Status': 'completed'})
-        self.assertEqual(self.relay.outcome(CALL['sid']), ('completed', 'no-response'))
-        await self.post(self.path('machine'), fields)
-        self.assertEqual(self.client.api.call_count, 1)
-        await self.post(self.path('reply/0'), self.fields(SpeechResult="Yes I'm coming"))
-        self.assertEqual(self.row()['confirmation'], 'no-response')
-
-    async def test_human_unknown_and_confirmed_contacts_are_not_hung_up(self):
-        self.client.api.reset_mock()
-        for answer in ('human', 'unknown'):
-            response = await self.post(self.path('machine'), self.machine_fields(answer))
-            self.assertEqual(response.status, 204)
-        await self.post(self.path('reply/0'), self.fields(SpeechResult="I'm coming"))
         await self.post(self.path('machine'), self.machine_fields())
         self.client.api.assert_not_called()
+        self.assertEqual(self.row()['confirmation'], 'pending')
+        response = await self.post(self.path('reply/0'), self.fields(Digits='1'))
+        self.assertEqual(response.status, 200)
         self.assertEqual(self.row()['confirmation'], 'coming')
-
-    async def test_uncertain_voicemail_hangup_does_not_invent_a_completed_call(self):
-        self.client.api.reset_mock()
-        self.client.api.side_effect = TwilioError('Response uncertain')
-        response = await self.post(self.path('machine'), self.machine_fields())
-        self.assertEqual(response.status, 503)
-        self.assertEqual(self.relay.outcome(CALL['sid']), ('', 'no-response'))
-        self.assertFalse(self.session.machine_hangup_requested)
-
-    async def test_machine_callback_requires_valid_signature_account_and_call(self):
-        self.client.api.reset_mock()
-        response = await self.http.post(self.path('machine'), data=self.machine_fields())
-        self.assertEqual(response.status, 403)
-        for key, value in (('AccountSid', 'AC' + 'f' * 32), ('CallSid', 'CA' + 'f' * 32),
-                           ('To', '+16045550999')):
-            fields = self.machine_fields()
-            fields[key] = value
-            response = await self.post(self.path('machine'), fields)
-            self.assertEqual(response.status, 403)
-        self.client.api.assert_not_called()
 
     async def start_stream(self, account=None):
         path = self.path("audio")
