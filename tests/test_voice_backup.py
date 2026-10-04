@@ -34,6 +34,13 @@ class VoiceBackupTests(unittest.TestCase):
         self.alerts.submit.assert_called_once_with(self.controller.monitor.incident_id, None,
                                                    'Person requested help')
 
+    def test_repeated_help_and_polite_request_reach_dispatcher_once(self):
+        self.help(text='help help help')
+        self.help(text='help me please')
+        self.controller.tick(1)
+        self.assertEqual(self.controller.monitor.state, State.ALERTED)
+        self.alerts.submit.assert_called_once()
+
     def test_monitoring_uses_a_fresh_photo_without_waiting_for_a_fall(self):
         self.controller.monitor.calibrate(STANDING)
         self.controller.observe(STANDING, .9, b'current camera photo')

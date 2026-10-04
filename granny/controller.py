@@ -159,9 +159,8 @@ class Controller:
                     if not self._backup_session or event.incident_id != self._backup_session:
                         continue
                     if event.kind == 'backup_help':
-                        from .audio import URGENT_COMMANDS
-                        from .core import normalize_speech
-                        if (now - event.at <= 2 and normalize_speech(event.text) in URGENT_COMMANDS
+                        from .audio import is_help_command
+                        if (now - event.at <= 2 and is_help_command(event.text)
                                 and (event.confidence is None or event.confidence >= .75)):
                             self.request_help(now, source='Local voice backup')
                         else:
@@ -190,9 +189,8 @@ class Controller:
                     self.monitor.prompt_finished(event.at, event.incident_id)
                     self.audio_status = event.text
                 elif event.kind == "urgent":
-                    from .audio import URGENT_COMMANDS
-                    from .core import normalize_speech
-                    if normalize_speech(event.text) in URGENT_COMMANDS:
+                    from .audio import is_help_command
+                    if is_help_command(event.text):
                         self.heard = f"{event.source}: {event.text} (urgent command)"
                         self.actions(self.monitor.respond("help", 1, event.at, event.incident_id), now)
                 elif event.kind == "speech":

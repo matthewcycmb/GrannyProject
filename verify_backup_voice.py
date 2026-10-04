@@ -3,8 +3,10 @@
 Uses synthesized speech, no live microphone, camera, cloud requests or recipients.
 This verifies the software path, not recognition accuracy in a noisy room.
 """
+from array import array
 import json
 from pathlib import Path
+import random
 import tempfile
 import threading
 import time
@@ -18,17 +20,39 @@ from setup_models import SPEECH_MODEL
 from verify_voice_response import pcm, Speaker
 
 
+def audio_variant(audio, variant):
+    """Deterministic quiet/noisy PCM, not a substitute for testing room acoustics."""
+    if variant == 'clean':
+        return audio
+    source = array('h', audio)
+    gain = .15 if variant == 'quiet' else .5
+    rng = random.Random(42)
+    noise = 180 if variant == 'noise' else 0
+    return array('h', (max(-32768, min(32767, round(sample * gain + rng.gauss(0, noise))))
+                       for sample in source)).tobytes()
+
+
 def main():
+    Path('.granny/test-media').mkdir(parents=True, exist_ok=True)
     voice = VoiceCheck(SPEECH_MODEL, speaker=Speaker(), cloud_key='unused-test-key')
     report = {'scope': 'Synthesized PCM, real recognizer and dispatcher; mock recipients', 'cases': [],
               'real_notifications_sent': 0}
-    cases = [('backup-help', 'Help!', True), ('backup-help-me', 'Help me!', True),
-             ('backup-no-help', 'I do not need help', False),
-             ('backup-unrelated', 'Please turn on the television', False),
-             ('backup-prompt', 'Are you okay?', False)]
+    cases = [('backup-help', 'Help!', True, 'clean'),
+             ('backup-help-me', 'Help me!', True, 'clean'),
+             ('backup-repeated-help', 'Help help help!', True, 'clean'),
+             ('backup-polite-help', 'Help me please!', True, 'clean'),
+             ('backup-help-now', 'Please help me now!', True, 'clean'),
+             ('backup-quiet-help', 'Help help help!', True, 'quiet'),
+             ('backup-noisy-help', 'Help me please!', True, 'noise'),
+             ('backup-no-help', 'I do not need help', False, 'clean'),
+             ('backup-not-needed', 'Help is not needed', False, 'clean'),
+             ('backup-helpful', 'That was helpful', False, 'clean'),
+             ('backup-hello', 'Hello there', False, 'clean'),
+             ('backup-unrelated', 'Please turn on the television', False, 'clean'),
+             ('backup-prompt', 'Are you okay?', False, 'clean')]
     try:
-        for name, text, expected in cases:
-            audio = pcm(name, text)
+        for name, text, expected, variant in cases:
+            audio = audio_variant(pcm(name, text), variant)
             samples = bytes(11200) + audio + bytes(64000)
             ended = threading.Event()
             began = []
@@ -84,7 +108,7 @@ def main():
                             assert delay < 1.5, (name, delay)
                             control.request_help(time.monotonic())
                             assert call.call_count == 2 and telegram.call_count == 3
-                        row = {'case': name, 'alerted': expected, 'mock_calls': call.call_count,
+                        row = {'case': name, 'audio': variant, 'alerted': expected, 'mock_calls': call.call_count,
                                'mock_messages': telegram.call_count}
                         if expected:
                             row['seconds_after_phrase_end'] = round(delay, 3)

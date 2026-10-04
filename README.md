@@ -124,11 +124,17 @@ button starts the response workflow directly. Stop the app with **Ctrl+C** in it
 
 ## ElevenLabs voice and reply recognition
 
-The **voice backup** listens locally for **“help”** or **“help me”** while Granny is
+The **voice backup** listens locally for **“help”**, **“help me”**, repeated
+**“help, help, help”**, **“help me please”**, or **“please help me now”** while Granny is
 waiting, monitoring or recovering from a camera outage. It works before calibration
 and starts family alerts as soon as the command is recognized, without a fall or a
 45-second wait. The dashboard shows **Voice backup ON** only after the microphone
 opens. Its Help button also works without an active fall check.
+
+Repeating or extending a help command keeps its accumulated recognition time instead
+of restarting the timer. The same command matching applies during a voice check.
+Standby matching still rejects complete phrases such as “I do not need help”, “hello”,
+and “helpful”; it does not trigger from a substring anywhere in a sentence.
 
 Standby audio stays on the Mac and is not recorded or sent to ElevenLabs. During
 an existing response check, the original local urgent-help path remains active.
@@ -608,10 +614,11 @@ The simulated workflow also verified the 45-second silence alert during a camera
 the incident photo, and reconnection without duplicate notifications. No real notifications were sent.
 Actual camera/upload/network checks and their limitations are recorded in [the camera guide](esp32/README.md).
 
-The voice-backup replay verified real local recognition, two mocked calls and three
-mocked text messages with no camera or calibration. “Help” and “Help me” triggered
-about 0.1–0.6 seconds after the synthesized phrase ended; the tested unrelated,
-negated-help and prompt phrases did not trigger. A separate real Mac microphone
+The voice-backup replay verifies real local recognition, two mocked calls and three
+mocked text messages with no camera or calibration. It includes repeated and polite
+help commands, reduced-volume speech, deterministic added noise, and unrelated,
+negated-help and prompt phrases. The response replay also checks repeated help during
+prompt playback and longer help commands in a quiet pause. A separate real Mac microphone
 test recognized “Help me” with all notification channels disabled. The Mac input
 volume was raised from 29 to 65 for this test and demo. These are functional tests,
 not measured recognition accuracy for other voices or a noisy room.

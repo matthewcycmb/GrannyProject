@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import json
 import queue
+import re
 import threading
 import time
 
@@ -35,11 +36,22 @@ def new_recognizer(model, sample_rate=16000):
     return recognizer
 
 
-URGENT_COMMANDS = {"help", "help me", "please help", "please help me", "i need help"}
+URGENT_COMMANDS = {"help", "help me", "please help", "please help me", "i need help",
+                   "help help", "help help help", "help me please", "help please", "help now",
+                   "help me now", "please help me now", "i need help now", "i need your help"}
+GRAMMAR.extend(sorted(URGENT_COMMANDS - set(GRAMMAR)))
 BACKUP_GRAMMAR = sorted(URGENT_COMMANDS | {
     '[unk]', 'hello', 'hello there', 'helpful', 'no help', 'no help needed',
     'i do not need help', "i don't need help", 'i am okay', 'i am fine',
+    'help is not needed', 'that was helpful', 'can you help with homework',
 })
+
+
+def is_help_command(text):
+    """Recognize explicit calls for help, including repetitions, without substring matching."""
+    text = normalize_speech(text)
+    unit = r"(?:please )?help(?: me)?(?: please)?(?: now)?"
+    return text in URGENT_COMMANDS or re.fullmatch(rf"{unit}(?: {unit})*", text) is not None
 
 
 class FastHelp:
@@ -52,12 +64,15 @@ class FastHelp:
 
     def update(self, text, now):
         text = normalize_speech(text)
-        if text not in URGENT_COMMANDS:
+        if not is_help_command(text):
             self.text, self.since = "", None
             return False
-        if text != self.text:
+        if self.since is None:
             self.text, self.since = text, now
             return False
+        # Repeating or extending a help command strengthens it rather than
+        # resetting the timer every time another word arrives.
+        self.text = text
         if not self.sent and self.since is not None and now - self.since >= self.stable_seconds:
             self.sent = True
             return True
@@ -139,7 +154,7 @@ class VoiceCheck:
                                 continue
                             if recognizer.AcceptWaveform(chunk):
                                 text, confidence = transcript(recognizer.Result())
-                                urgent = normalize_speech(text) in URGENT_COMMANDS and confidence >= .75
+                                urgent = is_help_command(text) and confidence >= .75
                                 fast = FastHelp(stable_seconds=.25)
                             else:
                                 text = json.loads(recognizer.PartialResult()).get('partial', '')
@@ -375,7 +390,7 @@ class VoiceCheck:
                         urgent_final = urgent_recognizer.AcceptWaveform(chunk)
                         if urgent_final:
                             text, confidence = transcript(urgent_recognizer.Result())
-                            if normalize_speech(text) in URGENT_COMMANDS and confidence >= .75:
+                            if is_help_command(text) and confidence >= .75:
                                 if not stop.is_set() and not fast.sent:
                                     self._emit("speech", incident_id, text, confidence, "Local fast response")
                             fast = FastHelp()

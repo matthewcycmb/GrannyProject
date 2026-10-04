@@ -23,7 +23,10 @@ def pcm(name, text):
     subprocess.run(['/usr/bin/afconvert', '-f', 'WAVE', '-d', 'LEI16@16000', '-c', '1',
                     str(MEDIA / (name + '.aiff')), str(wav)], check=True, timeout=15)
     with wave.open(str(wav), 'rb') as stream:
-        return stream.readframes(stream.getnframes())
+        audio = stream.readframes(stream.getnframes())
+    if not audio or not any(audio):
+        raise RuntimeError('Mac speech synthesis produced no audio; rerun with access to macOS speech services.')
+    return audio
 
 
 class Speaker:
@@ -42,6 +45,9 @@ def main():
     cases = [('help-interrupt', 'Help', Response.HELP, True),
              ('help-boundary', 'Help', Response.HELP, True),
              ('help-pause', 'Help me', Response.HELP, False),
+             ('help-repeated-interrupt', 'Help help help!', Response.HELP, True),
+             ('help-polite-pause', 'Help me please!', Response.HELP, False),
+             ('help-now-pause', 'Please help me now!', Response.HELP, False),
              ('negative-reply', 'I am not okay', Response.HELP, False),
              ('safe-reply', 'I am okay', Response.OK, False),
              ('prompt-echo', 'Are you okay?', Response.UNKNOWN, True),

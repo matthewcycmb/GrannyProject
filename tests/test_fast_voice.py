@@ -6,7 +6,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-from granny.audio import VoiceCheck, VoiceEvent, FastHelp
+from granny.audio import VoiceCheck, VoiceEvent, FastHelp, is_help_command
 from granny.controller import Controller
 from granny.core import State
 from granny.speech import PHRASES
@@ -28,6 +28,28 @@ class FastVoiceTests(unittest.TestCase):
         self.assertFalse(fast.update('help', 0))
         self.assertFalse(fast.update('hello', .1))
         self.assertFalse(fast.update('help', .2))
+
+    def test_repeated_help_does_not_restart_the_urgent_timer(self):
+        fast = FastHelp(.25)
+        self.assertFalse(fast.update('help', 0))
+        self.assertFalse(fast.update('help help', .15))
+        self.assertTrue(fast.update('help help help', .3))
+
+    def test_polite_help_phrase_can_grow_without_losing_the_command(self):
+        fast = FastHelp(.25)
+        self.assertFalse(fast.update('help me', 0))
+        self.assertTrue(fast.update('help me please', .3))
+
+    def test_complete_help_requests_only(self):
+        for phrase in ('help help help', 'help me please', 'please help me now',
+                       'help help me please help', 'i need your help', 'help now'):
+            with self.subTest(phrase=phrase):
+                self.assertTrue(is_help_command(phrase))
+        for phrase in ('no help needed', 'i do not need help', 'help is not needed',
+                       'helpful', 'hello', 'can you help with homework', 'help me no',
+                       'the television said help', '[unk] help', 'help [unk]'):
+            with self.subTest(phrase=phrase):
+                self.assertFalse(is_help_command(phrase))
 
     def test_urgent_voice_dispatches_before_audio_shutdown_and_only_once(self):
         order = []
