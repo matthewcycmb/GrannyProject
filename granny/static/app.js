@@ -4,6 +4,8 @@ const buttons = [...document.querySelectorAll("[data-action]")];
 let current = null;
 let connected = false;
 let busy = false;
+let helpPending = false;
+let actionVersion = 0;
 let lastEvent = "";
 let frameUrl = null;
 let hasFrame = false;
@@ -98,9 +100,9 @@ function updateButtons() {
   const alerted = current?.state_key === "ALERTED";
   for (const button of buttons) {
     const action = button.dataset.action;
-    button.disabled = !connected || busy ||
+    button.disabled = !connected || (busy && action !== "help") ||
       (action === "okay" && !checking) ||
-      (action === "help" && alerted) ||
+      (action === "help" && (alerted || helpPending)) ||
       (["calibrate", "simulate"].includes(action) && (checking || alerted)) ||
       (action === "stop_voice" && (!alerted || !current?.voice_repeating)) ||
       (action === "stop_call_audio" && !current?.call_listening) ||
@@ -214,12 +216,13 @@ async function frameLoop() {
 byId("camera-feed").addEventListener("load", () => {hasFrame = true; cameraVisibility();});
 byId("camera-feed").addEventListener("error", () => {hasFrame = false; cameraVisibility();});
 
-for (const button of buttons) {
-  button.addEventListener("click", async () => {
-    if (!connected || busy || !current) return;
-    const action = button.dataset.action;
+async function runAction(action) {
+    if (!connected || !current || (busy && action !== "help")) return;
+    if (action === "help" && (helpPending || current.state_key === "ALERTED")) return;
+    const version = ++actionVersion;
     const incident = current.incident_id;
     const token = current.control_token;
+    if (action === "help") helpPending = true;
     busy = true;
     updateButtons();
     const message = byId("action-message");
@@ -228,7 +231,7 @@ for (const button of buttons) {
     try {
       if (action === "calibrate") {
         const checkCalibrationState = () => {
-          if (!connected || current.control_token !== token || current.incident_id !== incident ||
+          if (version !== actionVersion || !connected || current.control_token !== token || current.incident_id !== incident ||
               ["CHECKING", "ALERTED"].includes(current.state_key)) {
             throw new Error("Calibration cancelled because the monitor changed. Review its status and try again.");
           }
@@ -247,17 +250,31 @@ for (const button of buttons) {
         signal: AbortSignal.timeout(5000),
       });
       const result = await response.json();
+      if (version !== actionVersion) return;
       if (!response.ok) throw new Error(result.error || "Action could not be applied");
-      message.textContent = ({calibrate: "Calibrated. Monitoring is active.", simulate: "Voice check started. Say help now, or I am okay during a quiet pause.", okay: "Response submitted. Check the current incident status above.", help: "Help response submitted. Check notification status above.", stop_voice: "Voice stopped. Previously sent alerts remain active.", stop_call_audio: "Call audio muted on this Mac. The phone call continues.", reset: "Monitor reset. Call retries stopped. Previously sent messages cannot be recalled."})[button.dataset.action];
+      message.textContent = ({calibrate: "Calibrated. Monitoring is active.", simulate: "Voice check started. Say help now, or I am okay during a quiet pause.", okay: "Response submitted. Check the current incident status above.", help: "Alert triggered. Check family notification status above.", stop_voice: "Voice stopped. Previously sent alerts remain active.", stop_call_audio: "Call audio muted on this Mac. The phone call continues.", reset: "Monitor reset. Call retries stopped. Previously sent messages cannot be recalled."})[action];
       await refresh();
     } catch (error) {
-      message.textContent = error.name === "TimeoutError" || error.name === "TypeError" ? "Connection interrupted. Check the incident status before retrying." : error.message;
-      message.className = "error";
+      if (version === actionVersion) {
+        message.textContent = error.name === "TimeoutError" || error.name === "TypeError" ? "Connection interrupted. Check the incident status before retrying." : error.message;
+        message.className = "error";
+      }
     } finally {
-      busy = false;
+      if (action === "help") helpPending = false;
+      if (version === actionVersion) busy = false;
       updateButtons();
     }
-  });
 }
+for (const button of buttons) {
+  button.addEventListener("click", () => runAction(button.dataset.action));
+}
+document.addEventListener("keydown", (key) => {
+  if (key.key?.toLowerCase() !== "l" || key.repeat || key.isComposing || key.defaultPrevented ||
+      key.metaKey || key.ctrlKey || key.altKey || key.target?.isContentEditable ||
+      key.target?.closest("input, textarea, select, [role='textbox']")) return;
+  key.preventDefault();
+  // Help bypasses calibration's countdown and uses the same protected action as the button.
+  void runAction("help");
+});
 statusLoop();
 frameLoop();

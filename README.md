@@ -18,7 +18,7 @@ Allow camera and microphone access if macOS asks. In the default mode, input aud
 2. Stand upright and still in the monitored area for two seconds, then press **C** to calibrate.
 3. Press **F** to rehearse the voice check without acting out a fall.
 4. Say **“help”** during the check, including while the prompt plays. Say **“I am okay”** or **“no”** during a quiet pause.
-5. **O** and **H** provide clearly identified keyboard responses when needed.
+5. **O** provides an okay response; **H** or **L** triggers an immediate alert in the desktop window.
 6. **R** resets/re-arms monitoring; **Q** or Escape quits.
 
 When ready to send actual **TEST ONLY** Telegram messages to the saved recipients:
@@ -44,7 +44,8 @@ the server and monitoring. Closing the browser tab does not stop monitoring. No 
 
 - **Calibrate (5s)**: click, then step back during the countdown and stand still with head, feet, and floor visible for its final two seconds. Calibration uses several stable frames and rejects incomplete or moving poses.
 - **Simulate fall**: rehearse the spoken check without acting out a fall.
-- **I’m okay / Help**: button responses during an active check; speaking still works.
+- **I’m okay**: cancel an active voice check; speaking still works.
+- **Help (L)**: send an immediate family alert, including before calibration or without a camera/microphone. Press **L** with the dashboard tab focused; there is no 45-second wait. Enabled Telegram and phone-call channels start together. Holding the key or pressing it again does not duplicate an active incident; **Reset** rearms it. Typing in a text field or pressing **⌘L** does not trigger an alert.
 - **Stop voice**: silence repeated updates after an alert without resetting or recalling the alert.
 - **Reset**: reset/re-arm after a demo. Previously sent messages cannot be recalled.
 
@@ -383,7 +384,7 @@ Use recordings or controlled movement onto a mat for calibration; do not deliber
 .venv/bin/python verify_runtime.py
 .venv/bin/python verify_stream_runtime.py
 .venv/bin/python verify_voice_response.py
-node --test tests/test_steps.cjs tests/test_readiness.cjs
+node --test tests/test_steps.cjs tests/test_readiness.cjs tests/test_shortcuts.cjs
 ```
 
 The unit/integration suite uses synthetic poses and mocked notifications, covering timeout, reassurance,

@@ -176,6 +176,15 @@ class LocalHTTPTests(unittest.TestCase):
         self.client.assert_not_called()
         self.assertEqual(self.post("reset", status["incident_id"])[0], 200)
 
+    def test_immediate_help_http_action_skips_voice_check_and_does_not_repeat(self):
+        self.assertEqual(self.post("help")[0], 200)
+        self.assertEqual(self.controller.monitor.state, State.ALERTED)
+        self.assertIsNone(self.controller.monitor.deadline)
+        incident = self.controller.monitor.incident_id
+        self.assertEqual(self.post("help", incident)[0], 409)
+        self.assertEqual(self.controller.monitor.incident_id, incident)
+        self.client.assert_not_called()
+
     def test_cross_origin_requests_are_rejected(self):
         self.assertEqual(self.post("simulate", Origin="https://unrelated.example")[0], 403)
         self.assertEqual(self.request("/api/frame.jpg", headers={"Sec-Fetch-Site": "cross-site"})[0], 403)

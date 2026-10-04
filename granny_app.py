@@ -163,7 +163,7 @@ def main():
                     controller.begin_check(now, jpeg)
                 elif key == ord("o"):
                     controller.respond("i am okay", now)
-                elif key == ord("h"):
+                elif key in (ord("h"), ord("H"), ord("l"), ord("L")):
                     controller.request_help(now, source="Keyboard")
                 elif key == ord("r"):
                     controller.reset()

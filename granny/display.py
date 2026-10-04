@@ -79,7 +79,7 @@ def render(frame, landmarks, controller, now, telegram, camera_status="", fps=0)
     paragraph(canvas, textwrap.shorten(controller.alert_status, width=100, placeholder="..."),
               804, 589, width=34, color=TEXT)
     label(canvas, f"{fps:.1f} pose frames/sec", 28, 685, .45, MUTED)
-    label(canvas, "C  Calibrate    F  Simulate    O  I'm OK    H  Help    S  Stop voice    R  Reset    Q  Quit",
+    label(canvas, "C  Calibrate    F  Simulate    O  I'm OK    H/L  Help    S  Stop voice    R  Reset    Q  Quit",
           24, 722, .55, TEXT)
     label(canvas, "Demo prototype: one person, fixed camera, visible floor. No emergency calls.",
           24, 756, .40, MUTED)
