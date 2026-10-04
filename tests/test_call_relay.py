@@ -65,6 +65,19 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Record", fields)
         self.assertEqual(fields["TimeLimit"], 120)
         self.assertIn("played live", root.find("Say").text)
+        self.assertTrue(root.find("Say").text.startswith("Your loved one has asked for help."))
+        self.assertNotIn('demo', ' '.join(root.itertext()).lower())
+        self.assertTrue(all(say.get('voice') == 'Polly.Joanna-Neural' for say in root.iter('Say')))
+
+    async def test_silence_call_explains_fall_then_asks_for_confirmation(self):
+        root = ET.fromstring(self.relay.initial_xml(self.session, "No clear response before the deadline"))
+        self.assertTrue(root.find('Say').text.startswith('Your loved one may have fallen.'))
+        self.assertIn("didn't get a clear response", root.find('Say').text)
+        self.assertIn("I'm coming", root.find('Gather/Say').text)
+        self.assertEqual(root.find('Gather').get('input'), 'speech')
+        self.assertEqual(root.find('Gather').get('speechTimeout'), '2')
+        self.assertNotIn('press', ' '.join(root.itertext()).lower())
+        self.assertNotIn('demo', ' '.join(root.itertext()).lower())
 
     async def test_trial_mode_preserves_confirmation_without_unsupported_stream(self):
         self.relay.stream_audio = False
@@ -74,12 +87,12 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("played live", root.find("Say").text)
         response = await self.http.get(self.path("audio"), headers=self.headers(self.path("audio")))
         self.assertEqual(response.status, 404)
-        response = await self.post(self.path("reply/0"), self.fields(Digits="1"))
+        response = await self.post(self.path("reply/0"), self.fields(SpeechResult="Yes, I am coming"))
         self.assertEqual(response.status, 200)
         self.assertEqual(self.row()["confirmation"], "coming")
 
     async def test_unsigned_callbacks_and_dashboard_are_unavailable(self):
-        response = await self.http.post(self.path("reply/0"), data=self.fields(Digits="1"))
+        response = await self.http.post(self.path("reply/0"), data=self.fields(SpeechResult="Yes, I am coming"))
         self.assertEqual(response.status, 403)
         self.assertEqual(self.row()["confirmation"], "pending")
         for path in ("/api/status", "/api/frame.jpg", "/", "/.env"):
@@ -88,32 +101,43 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
     async def test_wrong_account_call_recipient_and_query_rejected(self):
         for key, value in (("AccountSid", "AC" + "d" * 32), ("CallSid", "CA" + "e" * 32),
                            ("To", "+16045550999")):
-            fields = self.fields(Digits="1")
+            fields = self.fields(SpeechResult="Yes, I am coming")
             fields[key] = value
             response = await self.post(self.path("reply/0"), fields)
             self.assertEqual(response.status, 403)
-        response = await self.post(self.path("reply/0") + "?a=b", self.fields(Digits="1"))
+        response = await self.post(self.path("reply/0") + "?a=b", self.fields(SpeechResult="Yes, I am coming"))
         self.assertEqual(response.status, 403)
         self.assertEqual(self.row()["confirmation"], "pending")
 
-    async def test_verbal_yes_requires_keypad_and_callback_retry_is_idempotent(self):
-        response = await self.post(self.path("reply/0"), self.fields(SpeechResult="Yes I can come"))
+    async def test_verbal_commitment_confirms_and_callback_retry_is_idempotent(self):
+        fields = self.fields(SpeechResult="Yes I'm coming", Confidence="0.93")
+        response = await self.post(self.path("reply/0"), fields)
         first = await response.text()
         self.assertEqual(response.status, 200)
-        self.assertIn("please press 1", first)
-        self.assertEqual(self.row()["confirmation"], "pending")
-        replay = await self.post(self.path("reply/0"), self.fields(SpeechResult="Yes I can come"))
-        self.assertEqual(await replay.text(), first)
-        response = await self.post(self.path("reply/1"), self.fields(Digits="1"))
-        self.assertEqual(response.status, 200)
         self.assertEqual(self.row()["confirmation"], "coming")
-        self.assertIn("confirmed that you can come", await response.text())
+        self.assertIn("let them know you're coming", first)
+        self.assertNotIn("press", first.lower())
+        replay = await self.post(self.path("reply/0"), fields)
+        self.assertEqual(await replay.text(), first)
+
+    async def test_uncertain_or_low_confidence_reply_asks_again_without_keypad(self):
+        for index, fields in enumerate((self.fields(SpeechResult="Maybe I can come"),
+                                        self.fields(SpeechResult="Yes", Confidence="0.2"))):
+            response = await self.post(self.path(f"reply/{index}"), fields)
+            text = await response.text()
+            self.assertEqual(self.row()["confirmation"], "pending")
+            self.assertIn("I didn't catch a clear answer", text)
+            self.assertNotIn("press", text.lower())
+
+    async def test_digit_alone_does_not_mark_a_spoken_confirmation(self):
+        await self.post(self.path("reply/0"), self.fields(Digits="1"))
+        self.assertEqual(self.row()["confirmation"], "pending")
 
     async def test_no_and_negation_never_claim_someone_is_coming(self):
         response = await self.post(self.path("reply/0"), self.fields(SpeechResult="Yes but I cannot come"))
         self.assertEqual(response.status, 200)
         self.assertEqual(self.row()["confirmation"], "unavailable")
-        self.assertIn("you cannot come", await response.text())
+        self.assertIn("you can't come", await response.text())
 
     async def test_silence_is_bounded_and_never_confirmed(self):
         for index in range(3):
@@ -132,7 +156,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.row()["state"], "completed")
 
     async def test_unknown_or_skipped_round_is_rejected(self):
-        response = await self.post(self.path("reply/2"), self.fields(Digits="1"))
+        response = await self.post(self.path("reply/2"), self.fields(SpeechResult="Yes, I am coming"))
         self.assertEqual(response.status, 409)
         self.assertEqual(self.row()["confirmation"], "pending")
 

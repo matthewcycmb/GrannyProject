@@ -38,7 +38,7 @@ function renderDeliveries() {
     : "A connected call does not mean someone is coming. Their confirmation appears separately when enabled.";
   const labels = {queued: "Queued", sending: "Sending", accepted: "Accepted", initiated: "Dialing",
     ringing: "Ringing", "in-progress": "Connected", completed: "Ended", busy: "Busy",
-    "no-answer": "No answer", canceled: "Cancelled", failed: "Failed", unconfirmed: "Unconfirmed"};
+    "no-answer": "No answer", canceled: "Cancelled", failed: "Failed", unconfirmed: "Unconfirmed", "retry-wait": "Calling again soon", "retry-stopped": "Retries stopped"};
   const amounts = {queued: 12, sending: 30, initiated: 35, ringing: 60, "in-progress": 85};
   for (const channel of ["telegram", "calls"]) {
     const list = byId(`${channel}-progress`);
@@ -53,13 +53,13 @@ function renderDeliveries() {
     }
     for (const row of entries) {
       const failed = ["failed", "busy", "no-answer", "canceled", "unconfirmed"].includes(row.state);
-      const pending = ["queued", "sending", "initiated", "ringing", "in-progress"].includes(row.state);
+      const pending = ["queued", "sending", "initiated", "ringing", "in-progress", "retry-wait"].includes(row.state);
       const item = document.createElement("article");
       item.className = `recipient ${failed ? "delivery-failed" : pending ? "delivery-pending" : "delivery-complete"}`;
       const heading = document.createElement("div");
       heading.className = "recipient-heading";
       const name = document.createElement("strong");
-      name.textContent = row.label;
+      name.textContent = row.label + (row.attempt > 1 ? ` · attempt ${row.attempt}` : "");
       const badge = document.createElement("span");
       badge.textContent = channel === "calls" && row.state === "sending" ? "Dialing" : labels[row.state] || "Checking";
       heading.append(name, badge);
@@ -248,7 +248,7 @@ for (const button of buttons) {
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Action could not be applied");
-      message.textContent = ({calibrate: "Calibrated. Monitoring is active.", simulate: "Voice check started. Say help now, or I am okay during a quiet pause.", okay: "Response submitted. Check the current incident status above.", help: "Help response submitted. Check notification status above.", stop_voice: "Voice stopped. Previously sent alerts remain active.", stop_call_audio: "Call audio muted on this Mac. The phone call continues.", reset: "Monitor reset. Previously sent messages cannot be recalled."})[button.dataset.action];
+      message.textContent = ({calibrate: "Calibrated. Monitoring is active.", simulate: "Voice check started. Say help now, or I am okay during a quiet pause.", okay: "Response submitted. Check the current incident status above.", help: "Help response submitted. Check notification status above.", stop_voice: "Voice stopped. Previously sent alerts remain active.", stop_call_audio: "Call audio muted on this Mac. The phone call continues.", reset: "Monitor reset. Call retries stopped. Previously sent messages cannot be recalled."})[button.dataset.action];
       await refresh();
     } catch (error) {
       message.textContent = error.name === "TimeoutError" || error.name === "TypeError" ? "Connection interrupted. Check the incident status before retrying." : error.message;

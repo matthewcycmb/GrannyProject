@@ -11,6 +11,17 @@ from xml.etree import ElementTree
 from telegram_setup import ssl_context
 
 CONFIG = Path(__file__).resolve().parent.parent / ".granny" / "twilio.json"
+CALL_VOICE = {"voice": "Polly.Joanna-Neural", "language": "en-US"}
+
+
+def alert_summary(reason):
+    """Describe the observed trigger without inventing an injury or a fall."""
+    if reason == "Person requested help":
+        return "Your loved one has asked for help. Please check on them right away."
+    if reason == "No clear response before the deadline":
+        return ("Your loved one may have fallen. Granny asked if they were okay, "
+                "but didn't get a clear response. Please check on them now.")
+    return "Granny detected a possible fall involving your loved one. Please check on them now."
 
 
 class TwilioError(Exception):
@@ -152,15 +163,11 @@ class TwilioClient:
         if number not in {person["number"] for person in self.config["recipients"]}:
             raise TwilioError("Call blocked: the number is not a selected demo recipient.")
         response = ElementTree.Element("Response")
-        say = ElementTree.SubElement(response, "Say", {"voice": "alice", "language": "en-US"})
+        say = ElementTree.SubElement(response, "Say", CALL_VOICE)
         if setup_test:
             say.text = "This is a Granny Project setup test. No fall or emergency has been detected. The test is complete. Goodbye."
         else:
-            explanation = {"Person requested help": "The demo participant requested help.",
-                           "No clear response before the deadline": "The demo participant did not give a clear response."}
-            say.text = ("This is a Granny Project demonstration alert, not a real emergency. "
-                        + explanation.get(reason, "The demo fall response was triggered.")
-                        + " Please check on the demo participant. Emergency services have not been called.")
+            say.text = alert_summary(reason) + " Emergency services have not been called."
         ElementTree.SubElement(response, "Hangup")
         result = self.api("Calls", {"From": self.config["from_number"], "To": number,
                                     "Twiml": ElementTree.tostring(response, encoding="unicode"),

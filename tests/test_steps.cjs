@@ -52,3 +52,10 @@ test('disabled channels and disconnected dashboard get no success tick', () => {
   for (const channel of ['voice','telegram','calls']) assert.equal(offline[channel].state,'offline');
   assert.equal(offline.confirmation,'');
 });
+
+test('retrying calls stay active and a confirmed family member ends the retry display', () => {
+  const rows=[row('calls','retry-wait','no-response'),row('calls','completed','no-response')];
+  assert.deepEqual(summarizeSteps(status(rows)).calls,{state:'active',text:'Calling again soon'});
+  rows[1].confirmation='coming';
+  assert.deepEqual(summarizeSteps(status(rows)).calls,{state:'done',text:'Family coming'});
+});

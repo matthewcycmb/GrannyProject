@@ -240,10 +240,19 @@ listening pause**, with an alert **45 seconds after the first prompt finishes**.
 that deadline; a failed initial prompt is capped at 60 seconds from the check starting.
 
 With `--listen-calls`, an automated phone conversation asks the contact whether they can come.
-They can speak yes/no, but **pressing 1** is required to mark **confirmed they can come**; **2** means
-unavailable. Verbal yes leads to a keypad confirmation request. Three unanswered/unclear attempts end
-the call without a confirmation. This is a scripted confirmation conversation using Twilio's voice,
-not a free-form ElevenLabs AI agent. A commitment is not proof of arrival.
+They can say **“Yes, I'm coming”**, **“I'm on my way”**, or **“I can't come”** without pressing
+any buttons. Twilio transcribes the reply using its phone-call speech model; the app accepts a clear
+commitment and asks again for uncertain or low-confidence replies. After three unclear/silent replies,
+the call ends without claiming anyone is coming. This is a focused speech-confirmation conversation;
+a commitment is not proof of arrival.
+
+Unanswered, busy, failed, or ended calls without a clear response are retried after **30 seconds**.
+Retries continue while the incident is active. A contact who says they cannot come is not called again;
+when any contact confirms they are coming, all further retries stop. **Reset** or quitting the app also
+stops retries, while calls already submitted may finish. Telegram messages are still sent once per
+incident. Each attempt is recorded in the local `call_attempts` table; the dashboard shows retry progress.
+A call-creation timeout or unknown ending pauses retries to avoid overlapping calls. Basic `--calls`
+without `--listen-calls` keeps the one-call behavior because it cannot gather a spoken response.
 
 On an upgraded Twilio account, the Mac plays both sides of the first connected call. The repeated local update stops when the call
 stream starts; the Mac microphone remains off. **Mute call audio** mutes the Mac while the phone call
@@ -299,9 +308,14 @@ enabled channels. Leave both flags out for a practice session with no outgoing m
 On help/silence, the app submits call and Telegram requests concurrently. Actual ringing times depend on
 Twilio's call queue and carriers; exact simultaneous ringing is not guaranteed.
 
-Each call identifies itself as a Granny Project demonstration, explains the help/no-response trigger,
-and asks the contact to check on the demo participant. It rings for about 20 seconds before timing out,
-has a 60-second call limit, and does not record audio. TwiML is sent directly with the API request,
+Family alert calls now open directly with the situation: “Your loved one has asked for help,”
+or “Your loved one may have fallen,” followed by the unanswered check-in when applicable.
+Both call paths use Twilio's [Polly Joanna Neural voice](https://www.twilio.com/docs/voice/twiml/say/text-speech)
+and omit the app's demonstration introduction. They do not invent an injury or inability to get up.
+The explicit setup-test command still identifies a setup test. Twilio may add its own trial-account
+announcement before the app's speech. Calls ask the family contact to check on the person and
+state that emergency services have not been called. They ring for about 20 seconds before timing out,
+have a 60-second call limit in basic mode, and do not record audio. TwiML is sent directly with the API request,
 so no public website, tunnel, or webhook is needed for this outbound demo.
 
 The Family alerts panel tracks each Telegram send and call separately. Calls show dialing, ringing, connected, ended, busy, unanswered, or failed using Twilio status updates. Telegram acceptance does not prove the recipient has read it. A connected call does not prove a person will come. Provider call IDs are

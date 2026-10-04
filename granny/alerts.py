@@ -14,7 +14,8 @@ from .delivery import DeliveryProgress, CALL_DETAILS
 
 class AlertDispatcher:
     def __init__(self, directory, telegram=False, config=None, client=None,
-                 calls=False, call_config=None, call_client=None, call_status_client=None, call_relay=None):
+                 calls=False, call_config=None, call_client=None, call_status_client=None, call_relay=None,
+                 call_retry_seconds=30, call_poll_seconds=2):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.database = self.directory / "alerts.sqlite3"
@@ -32,9 +33,13 @@ class AlertDispatcher:
         self.progress_events = queue.Queue()
         self.progress = DeliveryProgress(self.progress_events)
         self.stopping = threading.Event()
+        self.call_stops = {}
+        self.call_retry_seconds = call_retry_seconds
+        self.call_poll_seconds = call_poll_seconds
         self.watchers = ThreadPoolExecutor(max_workers=5, thread_name_prefix="granny-call-status")
         self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="granny-alert")
         self.futures = []
+        self.call_futures = []
         self.lock = threading.Lock()
         if telegram and not self.config.get("recipients"):
             raise ValueError("Run python3 telegram_setup.py contacts before enabling Telegram.")
@@ -43,6 +48,9 @@ class AlertDispatcher:
         self._sql("CREATE TABLE IF NOT EXISTS deliveries "
                   "(incident_id TEXT, channel TEXT, recipient TEXT, status TEXT, provider_id TEXT, "
                   "PRIMARY KEY (incident_id, channel, recipient))")
+        self._sql("CREATE TABLE IF NOT EXISTS call_attempts "
+                  "(incident_id TEXT, recipient TEXT, attempt INTEGER, provider_id TEXT, status TEXT, "
+                  "PRIMARY KEY (incident_id, recipient, attempt))")
 
     def _sql(self, statement, parameters=()):
         connection = sqlite3.connect(self.database, timeout=5)
@@ -61,6 +69,9 @@ class AlertDispatcher:
                                   if self.calls else "telegram-demo" if self.telegram else "dry-run"), "queued"))
             if not claimed:
                 return None
+            self.call_stops[incident_id] = threading.Event()
+            while len(self.call_stops) > 32:
+                self.call_stops.pop(next(iter(self.call_stops))).set()
             self.progress.begin(incident_id, self.config.get("recipients", []) if self.telegram else [],
                                 self.call_config.get("recipients", []) if self.calls else [])
             future = self.pool.submit(self._deliver, incident_id, photo, reason)
@@ -110,6 +121,9 @@ class AlertDispatcher:
             def call(number):
                 self.progress.update(incident_id, "calls", number, state="sending", detail="Starting the phone call")
                 try:
+                    if not self._calls_active(incident_id):
+                        self.progress.update(incident_id, "calls", number, state="canceled", detail="Calls stopped")
+                        return False, "", "Calls stopped."
                     if self.call_relay:
                         result = self.call_relay.create_call(number, incident_id, reason, self.progress)
                     else:
@@ -118,10 +132,14 @@ class AlertDispatcher:
                     state = result.get("status", "queued")
                     self.progress.update(incident_id, "calls", number, state=state,
                                          detail=CALL_DETAILS.get(state, "Call request accepted"))
+                    if self.call_relay and result.get("sid"):
+                        self._record_attempt(incident_id, number, 1, result["sid"], state)
+                        self.call_futures.append(self.watchers.submit(
+                            self._watch_family_call, incident_id, number, result["sid"], reason))
+                    elif self.call_status_client and result.get("sid"):
+                        self.watchers.submit(self._watch_call, incident_id, number, result["sid"])
                     if result.get("status") in {"failed", "canceled", "busy", "no-answer"}:
                         return False, result.get("sid", ""), "Twilio reports the call was not connected."
-                    if self.call_status_client and result.get("sid"):
-                        self.watchers.submit(self._watch_call, incident_id, number, result["sid"])
                     return True, result.get("sid", ""), ""
                 except TwilioError as exc:
                     self.progress.update(incident_id, "calls", number, state="unconfirmed", detail=str(exc))
@@ -175,6 +193,88 @@ class AlertDispatcher:
         except Exception as exc:
             self.events.put((incident_id, f"Alert failed ({type(exc).__name__}); check local storage/network."))
 
+    def cancel_calls(self, incident):
+        """Stop future attempts. An already submitted phone call may still finish."""
+        with self.lock:
+            stop = self.call_stops.get(incident)
+            if stop is not None:
+                stop.set()
+
+    def _calls_active(self, incident):
+        stop = self.call_stops.get(incident)
+        return (stop is not None and not stop.is_set() and not self.stopping.is_set()
+                and not self.progress.family_confirmed(incident))
+
+    def _wait_call(self, incident, seconds):
+        deadline = time.monotonic() + seconds
+        stop = self.call_stops.get(incident)
+        while self._calls_active(incident):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return True
+            stop.wait(min(.2, remaining))
+        return False
+
+    def _record_attempt(self, incident, number, attempt, sid, status):
+        self._sql("INSERT OR REPLACE INTO call_attempts VALUES (?, ?, ?, ?, ?)",
+                  (incident, number, attempt, sid, status))
+
+    def _watch_family_call(self, incident, number, sid, reason):
+        attempt = 1
+        deadline = time.monotonic() + 180
+        while self._calls_active(incident):
+            outcome = self.call_relay.outcome(sid)
+            if not outcome:
+                break
+            terminal, confirmation = outcome
+            if confirmation in {"coming", "unavailable"}:
+                return
+            if terminal:
+                self._record_attempt(incident, number, attempt, sid, terminal)
+                if terminal == "canceled":
+                    return
+                self.progress.update(incident, "calls", number, attempt=attempt, state="retry-wait",
+                                     detail=f"No clear response. Calling again in {self.call_retry_seconds:g} seconds.")
+                if not self._wait_call(incident, self.call_retry_seconds):
+                    self.progress.update(incident, "calls", number, attempt=attempt,
+                                         state="retry-stopped", detail="Further calls stopped.")
+                    return
+                # A late speech callback during the pause may have resolved this contact.
+                latest = self.call_relay.outcome(sid)
+                if latest is None:
+                    break
+                if latest[1] in {"coming", "unavailable"}:
+                    self.progress.update(incident, "calls", number, attempt=attempt,
+                                         state="retry-stopped", detail="Family response received; retries stopped.")
+                    return
+                attempt += 1
+                self.progress.update(incident, "calls", number, attempt=attempt, state="sending",
+                                     detail=f"Calling again · attempt {attempt}")
+                try:
+                    result = self.call_relay.create_call(number, incident, reason, self.progress, attempt=attempt)
+                    sid = result["sid"]
+                    self._record_attempt(incident, number, attempt, sid, result.get("status", "queued"))
+                    self._sql("UPDATE deliveries SET provider_id=? WHERE incident_id=? AND channel='calls' AND recipient=?",
+                              (sid, incident, number))
+                except Exception:
+                    self._record_attempt(incident, number, attempt, "", "unconfirmed")
+                    # POST timeout may mean a call exists. Never create a duplicate blindly.
+                    break
+                deadline = time.monotonic() + 180
+                continue
+            if time.monotonic() >= deadline:
+                break  # No confirmed ending: do not risk two overlapping calls.
+            if not self._wait_call(incident, self.call_poll_seconds):
+                return
+            try:
+                status = self.call_status_client(sid).get("status") if self.call_status_client else None
+                self.call_relay.outcome(sid, status)
+            except Exception:
+                pass  # Signed callbacks can still provide a confirmed ending.
+        if self._calls_active(incident):
+            self.progress.update(incident, "calls", number, attempt=attempt, state="unconfirmed",
+                                 detail="Call status uncertain. Retries paused; check Twilio Voice logs.")
+
     def _watch_call(self, incident, number, sid):
         until = time.monotonic() + 180
         while not self.stopping.wait(2) and time.monotonic() < until:
@@ -190,5 +290,8 @@ class AlertDispatcher:
 
     def close(self, block=True):
         self.stopping.set()
+        with self.lock:
+            for stop in self.call_stops.values():
+                stop.set()
         self.pool.shutdown(wait=block, cancel_futures=False)
         self.watchers.shutdown(wait=block, cancel_futures=True)

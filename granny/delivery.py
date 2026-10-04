@@ -18,7 +18,7 @@ class DeliveryProgress:
                          else f"Family contact · {recipient[-4:]}")
                 rows[(channel, recipient)] = {"channel": channel, "label": label, "state": "queued",
                                                "detail": "Waiting to start", "confirmation": "pending",
-                                               "audio": "off"}
+                                               "audio": "off", "attempt": 1}
         with self.lock:
             self.rows[incident] = rows
             # Retain recent incidents for late callbacks, with a bounded memory footprint.
@@ -31,10 +31,17 @@ class DeliveryProgress:
             row = self.rows.get(incident, {}).get((channel, str(recipient)))
             if row is None:
                 return
+            attempt = fields.get("attempt", 1)
+            if channel == "calls" and attempt < row["attempt"]:
+                return  # An old call's callback cannot overwrite its replacement.
+            if channel == "calls" and attempt > row["attempt"]:
+                row.update(attempt=attempt, state="queued", detail="Waiting to start",
+                           confirmation="pending", audio="off")
             allowed = {key: value for key, value in fields.items()
                        if key in {"state", "detail", "confirmation", "audio"}}
             stages = {"sending": 0, "queued": 1, "initiated": 2, "ringing": 3, "in-progress": 4,
-                      "completed": 5, "busy": 5, "no-answer": 5, "canceled": 5, "failed": 5}
+                      "completed": 5, "busy": 5, "no-answer": 5, "canceled": 5, "failed": 5,
+                      "retry-wait": 6, "unconfirmed": 7, "retry-stopped": 7}
             if channel == "calls" and "state" in allowed:
                 old, new = row["state"], allowed["state"]
                 if old != "queued" or row["detail"] != "Waiting to start":
@@ -50,6 +57,11 @@ class DeliveryProgress:
                 return
             row.update(allowed)
             self._publish(incident)
+
+    def family_confirmed(self, incident):
+        with self.lock:
+            return any(row["channel"] == "calls" and row["confirmation"] == "coming"
+                       for row in self.rows.get(incident, {}).values())
 
     def _publish(self, incident):
         self.events.put((incident, deepcopy(list(self.rows[incident].values()))))

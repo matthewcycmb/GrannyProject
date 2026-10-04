@@ -41,20 +41,31 @@ class CallClientTests(unittest.TestCase):
             self.client.create_call("+16045550103", "incident", "Help")
         api.assert_not_called()
 
-    def test_call_has_demo_speech_hangup_and_bounded_duration(self):
+    def test_call_starts_with_help_request_and_has_bounded_duration(self):
         with patch.object(self.client, "api", return_value=CALL) as api:
             result = self.client.create_call("+16045550101", "incident", "Person requested help")
         self.assertEqual(result, CALL)
         method, fields = api.call_args.args
         self.assertEqual(method, "Calls")
         xml = ElementTree.fromstring(fields["Twiml"])
-        self.assertIn("demonstration alert, not a real emergency", xml.find("Say").text)
-        self.assertIn("requested help", xml.find("Say").text)
+        self.assertTrue(xml.find("Say").text.startswith("Your loved one has asked for help."))
+        self.assertNotIn("demo", xml.find("Say").text.lower())
+        self.assertNotIn("fall", xml.find("Say").text.lower())
+        self.assertEqual(xml.find("Say").get("voice"), "Polly.Joanna-Neural")
         self.assertIsNotNone(xml.find("Hangup"))
         self.assertEqual(fields["TimeLimit"], 60)
         self.assertEqual(fields["Timeout"], 20)
         self.assertNotIn("Url", fields)
         self.assertNotIn("Record", fields)
+
+    def test_silence_call_explains_possible_fall_without_claiming_an_injury(self):
+        with patch.object(self.client, "api", return_value=CALL) as api:
+            self.client.create_call("+16045550101", "incident", "No clear response before the deadline")
+        speech = ElementTree.fromstring(api.call_args.args[1]["Twiml"]).find("Say").text
+        self.assertTrue(speech.startswith("Your loved one may have fallen."))
+        self.assertIn("didn't get a clear response", speech)
+        for claim in ('demo', 'unconscious', 'injured', 'cannot get up'):
+            self.assertNotIn(claim, speech.lower())
 
     def test_setup_call_does_not_claim_a_fall(self):
         with patch.object(self.client, "api", return_value=CALL) as api:

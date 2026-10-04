@@ -17,9 +17,9 @@ from aiohttp import web, WSMsgType
 from twilio.request_validator import RequestValidator
 
 from .call_audio import CallAudioPlayer
-from .calls import TwilioClient, TwilioError, phone_number
-from .core import normalize_speech
+from .calls import TwilioClient, TwilioError, phone_number, CALL_VOICE, alert_summary
 from .delivery import CALL_DETAILS
+from .family_response import family_response
 
 TERMINAL = {"completed", "failed", "canceled", "busy", "no-answer"}
 
@@ -48,9 +48,11 @@ class Session:
     muted: bool = False
     player: object = None
     status_sequence: int = -1
+    attempt: int = 1
+    terminal_status: str = ""
 
     def update(self, **fields):
-        self.progress.update(self.incident, "calls", self.number, **fields)
+        self.progress.update(self.incident, "calls", self.number, attempt=self.attempt, **fields)
 
 
 class CallRelay:
@@ -137,17 +139,17 @@ class CallRelay:
                         session.player.close()
                         session.update(audio="muted")
 
-    def create_call(self, number, incident, reason, progress):
+    def create_call(self, number, incident, reason, progress, attempt=1):
         number = phone_number(number)
         if number not in {p["number"] for p in self.config["recipients"]}:
             raise TwilioError("Call blocked: the number is not a selected demo recipient.")
         if not self.public_url:
             raise TwilioError("Call audio endpoint is not ready.")
-        session = Session(secrets.token_urlsafe(32), incident, number, progress)
+        session = Session(secrets.token_urlsafe(32), incident, number, progress, attempt=attempt)
         with self.lock:
             self.sessions = {key: value for key, value in self.sessions.items()
                              if time.monotonic() - value.created < 300}
-            if len(self.sessions) >= 32:
+            if len(self.sessions) >= 64:
                 raise TwilioError("Too many recent calls. Wait before starting a new demo.")
             self.sessions[session.token] = session
         session.update(audio="waiting" if self.stream_audio else "upgrade-required")
@@ -159,18 +161,39 @@ class CallRelay:
         })
         with self.lock:
             self.bind(session, self.config["account_sid"], result.get("sid", ""))
+            self.apply_status(session, result.get("status"))
         return result
+
+    def apply_status(self, session, status):
+        # Caller holds self.lock. A terminal call can never ring again.
+        if status not in CALL_DETAILS or session.terminal_status:
+            return
+        session.update(state=status, detail=CALL_DETAILS[status])
+        if status in TERMINAL:
+            session.terminal_status = status
+            if session.confirmation == "pending":
+                session.confirmation = "no-response"
+                session.update(confirmation="no-response")
+
+    def outcome(self, sid, status=None):
+        """Merge a read-only status poll with signed speech/status callbacks."""
+        with self.lock:
+            session = next((s for s in self.sessions.values() if s.sid == sid), None)
+            if session is None:
+                return None
+            self.apply_status(session, status)
+            return session.terminal_status, session.confirmation
 
     def url(self, session, path):
         return f"{self.public_url}/call/{session.token}/{path}"
 
     @staticmethod
     def say(parent, text):
-        ET.SubElement(parent, "Say", voice="alice", language="en-US").text = text
+        ET.SubElement(parent, "Say", CALL_VOICE).text = text
 
     def gather(self, root, session, round_number, text):
-        gather = ET.SubElement(root, "Gather", input="speech dtmf", numDigits="1", timeout="8",
-                               speechTimeout="auto", actionOnEmptyResult="true", method="POST",
+        gather = ET.SubElement(root, "Gather", input="speech", timeout="8",
+                               speechModel="phone_call", speechTimeout="2", actionOnEmptyResult="true", method="POST",
                                action=self.url(session, f"reply/{round_number}"), language="en-US")
         self.say(gather, text)
         ET.SubElement(root, "Hangup")  # A failed callback never loops into another call.
@@ -180,40 +203,35 @@ class CallRelay:
         if self.stream_audio:
             ET.SubElement(ET.SubElement(root, "Start"), "Stream", track="both_tracks",
                           url=self.url(session, "audio").replace("https://", "wss://", 1))
-        disclosure = "This call may be played live beside the demo participant. " if self.stream_audio else ""
-        self.say(root, "This is a Granny Project demonstration, not a real emergency. "
-                       + disclosure + "Emergency services have not been called.")
-        explanation = ("They asked for help." if reason == "Person requested help"
-                       else "They did not give a clear response." if reason == "No clear response before the deadline"
-                       else "Their demo fall alert was triggered.")
-        self.gather(root, session, 0, explanation + " Can you come and check on them? "
-                    "Press 1 to confirm you can come, or press 2 if you cannot. You can also say yes or no.")
+        disclosure = " This call may be played live beside your loved one." if self.stream_audio else ""
+        self.say(root, alert_summary(reason) + " Emergency services have not been called." + disclosure)
+        self.gather(root, session, 0, "Can you go and check on them now? "
+                    "You can say, yes, I'm coming, or, I can't come.")
         return ET.tostring(root, encoding="unicode")
 
     def next_xml(self, session, round_number, fields):
         # A retried webhook gets exactly the same response, without changing state.
         if round_number in session.replies:
             return session.replies[round_number]
-        if round_number != session.round or session.confirmation != "pending":
+        if round_number != session.round or session.confirmation not in {"pending", "no-response"}:
             raise web.HTTPConflict()
-        words = set(normalize_speech(fields.get("SpeechResult", "")).split())
-        digit = fields.get("Digits", "")
-        negative = bool(words & {"no", "not", "cannot", "unavailable"})
+        response = family_response(fields.get("SpeechResult", ""), fields.get("Confidence"))
         root = ET.Element("Response")
-        if digit == "2" or negative:
+        if response == "unavailable":
             session.confirmation = "unavailable"
-            self.say(root, "Thank you for letting us know. I will tell the participant that you cannot come.")
-        elif digit == "1":
+            self.say(root, "Thanks for letting me know you can't come. "
+                           "Please ask another family member to check on them.")
+        elif response == "coming":
             session.confirmation = "coming"
-            self.say(root, "Thank you. You confirmed that you can come and check on them. "
-                           "I have registered your confirmation. Goodbye.")
+            self.say(root, "Thank you. I'll let them know you're coming. "
+                           "Please get to them as soon as you can.")
         elif round_number >= 2:
             session.confirmation = "no-response"
-            self.say(root, "I did not receive a confirmation. Please check the alert message. Goodbye.")
+            self.say(root, "I haven't received a confirmation. Please check on your loved one as soon as you can.")
         else:
             session.round += 1
-            prompt = ("To confirm that you can come, please press 1 on your phone keypad. "
-                      "Press 2 if you cannot come.")
+            prompt = ("I didn't catch a clear answer. Are you able to come and check on them? "
+                      "Please say, I'm coming, or, I can't come.")
             self.gather(root, session, session.round, prompt)
         if session.confirmation != "pending":
             ET.SubElement(root, "Hangup")
@@ -268,10 +286,7 @@ class CallRelay:
         with self.lock:
             if status in CALL_DETAILS and sequence > session.status_sequence:
                 session.status_sequence = sequence
-                session.update(state=status, detail=CALL_DETAILS[status])
-                if status in TERMINAL and session.confirmation == "pending":
-                    session.confirmation = "no-response"
-                    session.update(confirmation="no-response")
+                self.apply_status(session, status)
         return web.Response(status=204)
 
     async def audio(self, request):

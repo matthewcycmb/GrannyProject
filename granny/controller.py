@@ -252,6 +252,9 @@ class Controller:
         return True
 
     def reset(self):
+        cancel_calls = getattr(self.alerts, "cancel_calls", None)
+        if cancel_calls:
+            cancel_calls(self.monitor.incident_id)
         relay = getattr(self.alerts, "call_relay", None)
         if relay is not None:
             relay.mute(self.monitor.incident_id)
@@ -265,6 +268,6 @@ class Controller:
         self.deliveries = []
         self.heard = ""
         self.snapshot = None
-        self.alert_status = "Reset. Previously sent messages cannot be recalled."
+        self.alert_status = "Reset. Call retries stopped. Previously sent messages cannot be recalled."
         self.live_snapshot = None
         self._start_backup()

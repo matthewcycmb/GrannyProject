@@ -16,6 +16,9 @@ function summarizeSteps(status, online = true) {
     const entries = rows.filter(row => row.channel === name);
     if (!entries.length) return phase === "COOLDOWN" ? step("off", "Not needed")
       : phase === "ALERTED" ? step("active", "Starting…") : step("waiting", "Waiting");
+    if (name === "calls" && entries.some(row => row.confirmation === "coming")) return step("done", "Family coming");
+    if (name === "calls" && entries.some(row => row.state === "retry-wait")) return step("active", "Calling again soon");
+    if (name === "calls" && entries.some(row => row.state === "retry-stopped")) return step("warning", "Retries stopped");
     const success = entries.filter(row => name === "telegram" ? row.state === "accepted"
       : ["in-progress", "completed"].includes(row.state)).length;
     const failures = entries.filter(row => failedStates.includes(row.state));
