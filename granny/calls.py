@@ -12,16 +12,17 @@ from telegram_setup import ssl_context
 
 CONFIG = Path(__file__).resolve().parent.parent / ".granny" / "twilio.json"
 CALL_VOICE = {"voice": "Polly.Joanna-Neural", "language": "en-US"}
+PERSON_NAME = "Matthew"
 
 
 def alert_summary(reason):
     """Describe the observed trigger without inventing an injury or a fall."""
     if reason == "Person requested help":
-        return "Your loved one has asked for help. Please check on them right away."
+        return f"{PERSON_NAME} has asked for help. Please check on {PERSON_NAME} right away."
     if reason == "No clear response before the deadline":
-        return ("Your loved one may have fallen. Granny asked if they were okay, "
-                "but didn't get a clear response. Please check on them now.")
-    return "Granny detected a possible fall involving your loved one. Please check on them now."
+        return (f"{PERSON_NAME} may have fallen. Granny asked if {PERSON_NAME} was okay, "
+                f"but didn't get a clear response. Please check on {PERSON_NAME} now.")
+    return f"Granny detected a possible fall involving {PERSON_NAME}. Please check on {PERSON_NAME} now."
 
 
 class TwilioError(Exception):

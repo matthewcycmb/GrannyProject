@@ -65,18 +65,24 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Record", fields)
         self.assertEqual(fields["TimeLimit"], 120)
         self.assertIn("played live", root.find("Say").text)
-        self.assertTrue(root.find("Say").text.startswith("Your loved one has asked for help."))
+        self.assertTrue(root.find("Say").text.startswith("Matthew has asked for help."))
         self.assertNotIn('demo', ' '.join(root.itertext()).lower())
         self.assertTrue(all(say.get('voice') == 'Polly.Joanna-Neural' for say in root.iter('Say')))
+        self.assertEqual(fields['MachineDetection'], 'Enable')
+        self.assertEqual(fields['AsyncAmd'], 'true')
+        self.assertEqual(fields['AsyncAmdStatusCallback'], self.relay.url(self.session, 'machine'))
+        self.assertNotIn('your loved one', ' '.join(root.itertext()).lower())
 
     async def test_silence_call_explains_fall_then_asks_for_confirmation(self):
         root = ET.fromstring(self.relay.initial_xml(self.session, "No clear response before the deadline"))
-        self.assertTrue(root.find('Say').text.startswith('Your loved one may have fallen.'))
+        self.assertTrue(root.find('Say').text.startswith('Matthew may have fallen.'))
         self.assertIn("didn't get a clear response", root.find('Say').text)
         self.assertIn("I'm coming", root.find('Gather/Say').text)
-        self.assertEqual(root.find('Gather').get('input'), 'speech')
+        self.assertEqual(root.find('Gather').get('input'), 'speech dtmf')
+        self.assertEqual(root.find('Gather').get('numDigits'), '1')
         self.assertEqual(root.find('Gather').get('speechTimeout'), '2')
-        self.assertNotIn('press', ' '.join(root.itertext()).lower())
+        self.assertIn("press 1 to confirm", ' '.join(root.itertext()).lower())
+        self.assertIn("press 2", ' '.join(root.itertext()).lower())
         self.assertNotIn('demo', ' '.join(root.itertext()).lower())
 
     async def test_trial_mode_preserves_confirmation_without_unsupported_stream(self):
@@ -115,23 +121,47 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         first = await response.text()
         self.assertEqual(response.status, 200)
         self.assertEqual(self.row()["confirmation"], "coming")
-        self.assertIn("let them know you're coming", first)
+        self.assertIn("let Matthew know you're coming", first)
         self.assertNotIn("press", first.lower())
         replay = await self.post(self.path("reply/0"), fields)
         self.assertEqual(await replay.text(), first)
 
-    async def test_uncertain_or_low_confidence_reply_asks_again_without_keypad(self):
+    async def test_uncertain_or_low_confidence_reply_repeats_speech_and_keypad_options(self):
         for index, fields in enumerate((self.fields(SpeechResult="Maybe I can come"),
                                         self.fields(SpeechResult="Yes", Confidence="0.2"))):
             response = await self.post(self.path(f"reply/{index}"), fields)
             text = await response.text()
             self.assertEqual(self.row()["confirmation"], "pending")
             self.assertIn("I didn't catch a clear answer", text)
-            self.assertNotIn("press", text.lower())
+            self.assertIn("press 1", text.lower())
 
-    async def test_digit_alone_does_not_mark_a_spoken_confirmation(self):
-        await self.post(self.path("reply/0"), self.fields(Digits="1"))
-        self.assertEqual(self.row()["confirmation"], "pending")
+    async def test_keypad_one_confirms_despite_conflicting_room_noise(self):
+        fields = self.fields(Digits="1", SpeechResult="No I cannot come", Confidence="0.1")
+        response = await self.post(self.path("reply/0"), fields)
+        first = await response.text()
+        self.assertEqual(self.row()["confirmation"], "coming")
+        self.assertIn("let Matthew know you're coming", first)
+        self.assertEqual(await (await self.post(self.path("reply/0"), fields)).text(), first)
+
+    async def test_keypad_two_declines_despite_conflicting_room_noise(self):
+        await self.post(self.path("reply/0"), self.fields(Digits="2", SpeechResult="Yes I'm coming"))
+        self.assertEqual(self.row()["confirmation"], "unavailable")
+        self.client.api.reset_mock()
+        await self.post(self.path('machine'), self.machine_fields())
+        self.client.api.assert_not_called()
+        self.assertEqual(self.row()['confirmation'], 'unavailable')
+
+    async def test_explicit_keypress_overrides_a_false_machine_detection(self):
+        self.session.machine_detected = True
+        await self.post(self.path('reply/0'), self.fields(Digits='1'))
+        self.assertEqual(self.row()['confirmation'], 'coming')
+
+    async def test_other_keys_never_confirm_and_repeat_the_options(self):
+        for index, digit in enumerate(('3', '0', '12')):
+            response = await self.post(self.path(f"reply/{index}"), self.fields(Digits=digit, SpeechResult="Yes"))
+            self.assertNotEqual(self.row()["confirmation"], "coming")
+            if index < 2:
+                self.assertIn('press 1', (await response.text()).lower())
 
     async def test_no_and_negation_never_claim_someone_is_coming(self):
         response = await self.post(self.path("reply/0"), self.fields(SpeechResult="Yes but I cannot come"))
@@ -159,6 +189,53 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         response = await self.post(self.path("reply/2"), self.fields(SpeechResult="Yes, I am coming"))
         self.assertEqual(response.status, 409)
         self.assertEqual(self.row()["confirmation"], "pending")
+
+    def machine_fields(self, answered='machine_start'):
+        return {'AccountSid': CONFIG['account_sid'], 'CallSid': CALL['sid'],
+                'AnsweredBy': answered, 'MachineDetectionDuration': '2100'}
+
+    async def test_voicemail_ends_call_once_and_allows_normal_retry(self):
+        self.client.api.reset_mock()
+        self.client.api.return_value = {'sid': CALL['sid'], 'status': 'completed'}
+        fields = self.machine_fields()
+        response = await self.post(self.path('machine'), fields)
+        self.assertEqual(response.status, 204)
+        self.client.api.assert_called_once_with('Calls/' + CALL['sid'], {'Status': 'completed'})
+        self.assertEqual(self.relay.outcome(CALL['sid']), ('completed', 'no-response'))
+        await self.post(self.path('machine'), fields)
+        self.assertEqual(self.client.api.call_count, 1)
+        await self.post(self.path('reply/0'), self.fields(SpeechResult="Yes I'm coming"))
+        self.assertEqual(self.row()['confirmation'], 'no-response')
+
+    async def test_human_unknown_and_confirmed_contacts_are_not_hung_up(self):
+        self.client.api.reset_mock()
+        for answer in ('human', 'unknown'):
+            response = await self.post(self.path('machine'), self.machine_fields(answer))
+            self.assertEqual(response.status, 204)
+        await self.post(self.path('reply/0'), self.fields(SpeechResult="I'm coming"))
+        await self.post(self.path('machine'), self.machine_fields())
+        self.client.api.assert_not_called()
+        self.assertEqual(self.row()['confirmation'], 'coming')
+
+    async def test_uncertain_voicemail_hangup_does_not_invent_a_completed_call(self):
+        self.client.api.reset_mock()
+        self.client.api.side_effect = TwilioError('Response uncertain')
+        response = await self.post(self.path('machine'), self.machine_fields())
+        self.assertEqual(response.status, 503)
+        self.assertEqual(self.relay.outcome(CALL['sid']), ('', 'no-response'))
+        self.assertFalse(self.session.machine_hangup_requested)
+
+    async def test_machine_callback_requires_valid_signature_account_and_call(self):
+        self.client.api.reset_mock()
+        response = await self.http.post(self.path('machine'), data=self.machine_fields())
+        self.assertEqual(response.status, 403)
+        for key, value in (('AccountSid', 'AC' + 'f' * 32), ('CallSid', 'CA' + 'f' * 32),
+                           ('To', '+16045550999')):
+            fields = self.machine_fields()
+            fields[key] = value
+            response = await self.post(self.path('machine'), fields)
+            self.assertEqual(response.status, 403)
+        self.client.api.assert_not_called()
 
     async def start_stream(self, account=None):
         path = self.path("audio")

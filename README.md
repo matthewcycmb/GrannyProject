@@ -240,14 +240,20 @@ listening pause**, with an alert **45 seconds after the first prompt finishes**.
 that deadline; a failed initial prompt is capped at 60 seconds from the check starting.
 
 With `--listen-calls`, an automated phone conversation asks the contact whether they can come.
-They can say **“Yes, I'm coming”**, **“I'm on my way”**, or **“I can't come”** without pressing
-any buttons. Twilio transcribes the reply using its phone-call speech model; the app accepts a clear
+They can say **“Yes, I'm coming”**, **“I'm on my way”**, or **“I can't come”**. For a noisy room,
+the second option is **press 1 to confirm** or **press 2 if they cannot come**. A keypad response
+takes priority over speech received in the same callback. Twilio transcribes spoken replies using its
+phone-call speech model; the app accepts a clear
 commitment and asks again for uncertain or low-confidence replies. After three unclear/silent replies,
 the call ends without claiming anyone is coming. This is a focused speech-confirmation conversation;
 a commitment is not proof of arrival.
 
-Unanswered, busy, failed, or ended calls without a clear response are retried after **30 seconds**.
-Retries continue while the incident is active. A contact who says they cannot come is not called again;
+Declined, unanswered, busy, failed, cancelled, or ended calls without a clear response are retried after **6 seconds**.
+The pause begins once Twilio confirms the previous call ended; carrier signaling and ringing can add time.
+[Twilio answering-machine detection](https://www.twilio.com/docs/voice/answering-machine-detection)
+runs in the background and ends detected voicemail calls so they can retry sooner. It can misclassify
+voicemail; unknown results continue to the spoken check. Retries continue while the incident is active.
+A contact who says they cannot come or presses 2 is not called again;
 when any contact confirms they are coming, all further retries stop. **Reset** or quitting the app also
 stops retries, while calls already submitted may finish. Telegram messages are still sent once per
 incident. Each attempt is recorded in the local `call_attempts` table; the dashboard shows retry progress.
@@ -308,8 +314,8 @@ enabled channels. Leave both flags out for a practice session with no outgoing m
 On help/silence, the app submits call and Telegram requests concurrently. Actual ringing times depend on
 Twilio's call queue and carriers; exact simultaneous ringing is not guaranteed.
 
-Family alert calls now open directly with the situation: “Your loved one has asked for help,”
-or “Your loved one may have fallen,” followed by the unanswered check-in when applicable.
+Family alert calls now open directly with the situation: “Matthew has asked for help,”
+or “Matthew may have fallen,” followed by the unanswered check-in when applicable.
 Both call paths use Twilio's [Polly Joanna Neural voice](https://www.twilio.com/docs/voice/twiml/say/text-speech)
 and omit the app's demonstration introduction. They do not invent an injury or inability to get up.
 The explicit setup-test command still identifies a setup test. Twilio may add its own trial-account

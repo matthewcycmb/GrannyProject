@@ -2,6 +2,7 @@ from copy import deepcopy
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock
 
@@ -32,7 +33,9 @@ class CallRetryTests(unittest.TestCase):
         self.alerts = AlertDispatcher(self.directory.name, telegram=True,
             config={'token': '0:FAKE', 'recipients': [{'id': '1'}, {'id': '2'}, {'id': '3'}]},
             client=self.telegram, calls=True, call_config=self.config, call_relay=self.relay,
-            call_status_client=self.poll, call_retry_seconds=.01, call_poll_seconds=.001)
+            call_status_client=self.poll, call_poll_seconds=.001)
+        self.default_retry_seconds = self.alerts.call_retry_seconds
+        self.alerts.call_retry_seconds = .01
         self.addCleanup(self.alerts.close)
 
     def start(self):
@@ -155,11 +158,48 @@ class CallRetryTests(unittest.TestCase):
         other = self.alerts.progress.rows['incident'][('calls', people[1]['number'])]
         self.assertEqual(other['confirmation'], 'coming')
 
-    def test_provider_canceled_call_does_not_restart(self):
-        self.poll.return_value = {'status': 'canceled'}
+    def test_provider_decline_or_cancel_retries_after_six_seconds(self):
+        # Exercise default production timing without actually waiting or dialing.
+        self.alerts.call_retry_seconds = self.default_retry_seconds
+        waits = []
+        def wait(incident, seconds):
+            waits.append(seconds)
+            return self.alerts._calls_active(incident)
+        self.alerts._wait_call = wait
+        def poll(sid):
+            if len(self.sids) == 1:
+                return {'status': 'canceled'}
+            self.reply(sid, "Yes I'm coming")
+            return {'status': 'completed'}
+        self.poll.side_effect = poll
         self.start()
         self.finish()
-        self.assertEqual(len(self.sids), 1)
+        self.assertEqual(len(self.sids), 2)
+        self.assertIn(6, waits)
+        self.assertNotIn(30, waits)
+
+    def test_real_six_second_pause_starts_when_previous_call_ends(self):
+        self.alerts.call_retry_seconds = self.default_retry_seconds
+        dialed = []
+        ended = []
+        original = self.client.api.side_effect
+        def create(resource, fields):
+            dialed.append(time.monotonic())
+            return original(resource, fields)
+        self.client.api.side_effect = create
+        def poll(sid):
+            if len(self.sids) == 1:
+                ended.append(time.monotonic())
+                return {'status': 'busy'}
+            self.reply(sid, "I'm on my way")
+            return {'status': 'completed'}
+        self.poll.side_effect = poll
+        self.start()
+        for future in self.alerts.call_futures:
+            future.result(timeout=9)
+        self.assertEqual(len(dialed), 2)
+        self.assertGreaterEqual(dialed[1] - ended[0], 6)
+        self.assertLess(dialed[1] - ended[0], 7.5)
 
     def test_late_refusal_during_retry_pause_prevents_another_call(self):
         original = self.alerts._wait_call

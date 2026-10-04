@@ -15,7 +15,7 @@ from .delivery import DeliveryProgress, CALL_DETAILS
 class AlertDispatcher:
     def __init__(self, directory, telegram=False, config=None, client=None,
                  calls=False, call_config=None, call_client=None, call_status_client=None, call_relay=None,
-                 call_retry_seconds=30, call_poll_seconds=2):
+                 call_retry_seconds=6, call_poll_seconds=2):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.database = self.directory / "alerts.sqlite3"
@@ -231,8 +231,6 @@ class AlertDispatcher:
                 return
             if terminal:
                 self._record_attempt(incident, number, attempt, sid, terminal)
-                if terminal == "canceled":
-                    return
                 self.progress.update(incident, "calls", number, attempt=attempt, state="retry-wait",
                                      detail=f"No clear response. Calling again in {self.call_retry_seconds:g} seconds.")
                 if not self._wait_call(incident, self.call_retry_seconds):

@@ -17,7 +17,7 @@ from aiohttp import web, WSMsgType
 from twilio.request_validator import RequestValidator
 
 from .call_audio import CallAudioPlayer
-from .calls import TwilioClient, TwilioError, phone_number, CALL_VOICE, alert_summary
+from .calls import TwilioClient, TwilioError, phone_number, CALL_VOICE, PERSON_NAME, alert_summary
 from .delivery import CALL_DETAILS
 from .family_response import family_response
 
@@ -50,6 +50,8 @@ class Session:
     status_sequence: int = -1
     attempt: int = 1
     terminal_status: str = ""
+    machine_detected: bool = False
+    machine_hangup_requested: bool = False
 
     def update(self, **fields):
         self.progress.update(self.incident, "calls", self.number, attempt=self.attempt, **fields)
@@ -87,6 +89,7 @@ class CallRelay:
         app = web.Application(client_max_size=16_384)
         app.router.add_post("/call/{token}/reply/{round}", self.reply)
         app.router.add_post("/call/{token}/status", self.status)
+        app.router.add_post("/call/{token}/machine", self.machine)
         app.router.add_get("/call/{token}/audio", self.audio)
         return app
 
@@ -149,7 +152,7 @@ class CallRelay:
         with self.lock:
             self.sessions = {key: value for key, value in self.sessions.items()
                              if time.monotonic() - value.created < 300}
-            if len(self.sessions) >= 64:
+            if len(self.sessions) >= 256:
                 raise TwilioError("Too many recent calls. Wait before starting a new demo.")
             self.sessions[session.token] = session
         session.update(audio="waiting" if self.stream_audio else "upgrade-required")
@@ -158,6 +161,8 @@ class CallRelay:
             "Twiml": self.initial_xml(session, reason), "Timeout": 20, "TimeLimit": 120,
             "StatusCallback": self.url(session, "status"), "StatusCallbackMethod": "POST",
             "StatusCallbackEvent": ["initiated", "ringing", "answered", "completed"],
+            "MachineDetection": "Enable", "AsyncAmd": "true", "MachineDetectionTimeout": 10,
+            "AsyncAmdStatusCallback": self.url(session, "machine"), "AsyncAmdStatusCallbackMethod": "POST",
         })
         with self.lock:
             self.bind(session, self.config["account_sid"], result.get("sid", ""))
@@ -192,7 +197,7 @@ class CallRelay:
         ET.SubElement(parent, "Say", CALL_VOICE).text = text
 
     def gather(self, root, session, round_number, text):
-        gather = ET.SubElement(root, "Gather", input="speech", timeout="8",
+        gather = ET.SubElement(root, "Gather", input="speech dtmf", numDigits="1", timeout="8",
                                speechModel="phone_call", speechTimeout="2", actionOnEmptyResult="true", method="POST",
                                action=self.url(session, f"reply/{round_number}"), language="en-US")
         self.say(gather, text)
@@ -203,10 +208,11 @@ class CallRelay:
         if self.stream_audio:
             ET.SubElement(ET.SubElement(root, "Start"), "Stream", track="both_tracks",
                           url=self.url(session, "audio").replace("https://", "wss://", 1))
-        disclosure = " This call may be played live beside your loved one." if self.stream_audio else ""
+        disclosure = f" This call may be played live beside {PERSON_NAME}." if self.stream_audio else ""
         self.say(root, alert_summary(reason) + " Emergency services have not been called." + disclosure)
-        self.gather(root, session, 0, "Can you go and check on them now? "
-                    "You can say, yes, I'm coming, or, I can't come.")
+        self.gather(root, session, 0, f"Can you go and check on {PERSON_NAME} now? "
+                    "You can say, yes, I'm coming, or, I can't come. "
+                    "You can also press 1 to confirm you're coming, or press 2 if you can't come.")
         return ET.tostring(root, encoding="unicode")
 
     def next_xml(self, session, round_number, fields):
@@ -215,23 +221,29 @@ class CallRelay:
             return session.replies[round_number]
         if round_number != session.round or session.confirmation not in {"pending", "no-response"}:
             raise web.HTTPConflict()
-        response = family_response(fields.get("SpeechResult", ""), fields.get("Confidence"))
+        # An intentional key press takes priority over any simultaneous room noise.
+        digit = fields.get("Digits", "")
+        response = ({"1": "coming", "2": "unavailable"}.get(digit, "pending") if digit
+                    else family_response(fields.get("SpeechResult", ""), fields.get("Confidence")))
         root = ET.Element("Response")
-        if response == "unavailable":
+        if session.machine_detected and digit not in {"1", "2"}:
+            session.confirmation = "no-response"
+        elif response == "unavailable":
             session.confirmation = "unavailable"
             self.say(root, "Thanks for letting me know you can't come. "
-                           "Please ask another family member to check on them.")
+                           f"Please ask another family member to check on {PERSON_NAME}.")
         elif response == "coming":
             session.confirmation = "coming"
-            self.say(root, "Thank you. I'll let them know you're coming. "
-                           "Please get to them as soon as you can.")
+            self.say(root, f"Thank you. I'll let {PERSON_NAME} know you're coming. "
+                           f"Please get to {PERSON_NAME} as soon as you can.")
         elif round_number >= 2:
             session.confirmation = "no-response"
-            self.say(root, "I haven't received a confirmation. Please check on your loved one as soon as you can.")
+            self.say(root, f"I haven't received a confirmation. Please check on {PERSON_NAME} as soon as you can.")
         else:
             session.round += 1
-            prompt = ("I didn't catch a clear answer. Are you able to come and check on them? "
-                      "Please say, I'm coming, or, I can't come.")
+            prompt = (f"I didn't catch a clear answer. Are you able to come and check on {PERSON_NAME}? "
+                      "Please say, I'm coming, or, I can't come. "
+                      "Or press 1 if you're coming, or 2 if you can't come.")
             self.gather(root, session, session.round, prompt)
         if session.confirmation != "pending":
             ET.SubElement(root, "Hangup")
@@ -246,7 +258,7 @@ class CallRelay:
             raise web.HTTPForbidden()
         session.sid = sid
 
-    async def authenticated(self, request, socket=False):
+    async def authenticated(self, request, socket=False, machine=False):
         fields = {} if socket else await request.post()
         # Reject duplicates, query strings, and never trust the request's Host header.
         if request.query_string or len(fields) != len(set(fields.keys())):
@@ -261,7 +273,7 @@ class CallRelay:
             if session is None or time.monotonic() - session.created >= 300:
                 raise web.HTTPNotFound()
             if not socket:
-                if fields.get("To") != session.number:
+                if (not machine or "To" in fields) and fields.get("To") != session.number:
                     raise web.HTTPForbidden()
                 self.bind(session, fields.get("AccountSid", ""), fields.get("CallSid", ""))
         return session, fields
@@ -287,6 +299,31 @@ class CallRelay:
             if status in CALL_DETAILS and sequence > session.status_sequence:
                 session.status_sequence = sequence
                 self.apply_status(session, status)
+        return web.Response(status=204)
+
+    async def machine(self, request):
+        # AMD sends account/call IDs, but does not guarantee a To field.
+        session, fields = await self.authenticated(request, machine=True)
+        if fields.get("AnsweredBy") not in {"machine_start", "machine_end_beep", "machine_end_silence",
+                                            "machine_end_other", "fax"}:
+            return web.Response(status=204)
+        with self.lock:
+            if session.terminal_status or session.confirmation in {"coming", "unavailable"} or session.machine_hangup_requested:
+                return web.Response(status=204)
+            session.machine_detected = True
+            session.machine_hangup_requested = True
+            session.confirmation = "no-response"
+            session.update(confirmation="no-response", detail="Voicemail detected; ending this call before retrying")
+        try:
+            result = await asyncio.to_thread(self.client.api, f"Calls/{session.sid}", {"Status": "completed"})
+        except TwilioError:
+            with self.lock:
+                session.machine_hangup_requested = False
+            # The call may have ended despite a timeout. Status polling decides when retrying is safe.
+            return web.Response(status=503)
+        with self.lock:
+            if result.get("sid") == session.sid:
+                self.apply_status(session, result.get("status"))
         return web.Response(status=204)
 
     async def audio(self, request):

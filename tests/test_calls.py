@@ -48,7 +48,7 @@ class CallClientTests(unittest.TestCase):
         method, fields = api.call_args.args
         self.assertEqual(method, "Calls")
         xml = ElementTree.fromstring(fields["Twiml"])
-        self.assertTrue(xml.find("Say").text.startswith("Your loved one has asked for help."))
+        self.assertTrue(xml.find("Say").text.startswith("Matthew has asked for help."))
         self.assertNotIn("demo", xml.find("Say").text.lower())
         self.assertNotIn("fall", xml.find("Say").text.lower())
         self.assertEqual(xml.find("Say").get("voice"), "Polly.Joanna-Neural")
@@ -62,7 +62,7 @@ class CallClientTests(unittest.TestCase):
         with patch.object(self.client, "api", return_value=CALL) as api:
             self.client.create_call("+16045550101", "incident", "No clear response before the deadline")
         speech = ElementTree.fromstring(api.call_args.args[1]["Twiml"]).find("Say").text
-        self.assertTrue(speech.startswith("Your loved one may have fallen."))
+        self.assertTrue(speech.startswith("Matthew may have fallen."))
         self.assertIn("didn't get a clear response", speech)
         for claim in ('demo', 'unconscious', 'injured', 'cannot get up'):
             self.assertNotIn(claim, speech.lower())
