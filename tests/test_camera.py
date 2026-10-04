@@ -3,6 +3,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 import time
 import unittest
+from unittest.mock import Mock, call, patch
 
 import cv2
 import numpy as np
@@ -170,6 +171,67 @@ class NetworkCameraTests(unittest.TestCase):
         fixture.stall.clear()
         self.assertTrue(wait_until(lambda: camera.latest()[2] >= 5, timeout=6))
         self.assertEqual(camera.latest()[3], '')
+
+
+class LocalCameraRecoveryTests(unittest.TestCase):
+    def test_device_reopens_after_failed_read_and_drops_the_old_frame(self):
+        frame = np.zeros((24, 32, 3), dtype=np.uint8)
+        first = Mock()
+        first.isOpened.return_value = True
+        first.get.return_value = 30
+        first.read.side_effect = [(True, frame), (False, None)]
+        recovered = Mock()
+        recovered.isOpened.return_value = True
+        recovered.get.return_value = 30
+        camera = Camera('0')
+        def read_recovered():
+            camera._stop.wait(.01)
+            return True, frame
+        recovered.read.side_effect = read_recovered
+        with patch('cv2.VideoCapture', side_effect=[first, recovered]) as open_camera, \
+                patch('granny.camera.RECONNECT_DELAY_SECONDS', .2):
+            camera.start()
+            try:
+                self.assertTrue(wait_until(lambda: first.release.called, timeout=.5))
+                failed_frame, received, sequence, error = camera.latest()
+                self.assertIsNone(failed_frame, 'A failed camera must not expose a stale live frame')
+                self.assertEqual(received, 0)
+                self.assertIn('reconnecting', error.lower())
+                self.assertTrue(wait_until(lambda: camera.latest()[2] > sequence and not camera.latest()[3], timeout=1))
+                self.assertEqual(open_camera.call_count, 2)
+                self.assertEqual(open_camera.call_args_list, [call(0), call(0)])
+                self.assertLess(time.monotonic() - camera.latest()[1], .5)
+            finally:
+                camera.close()
+        self.assertFalse(camera.thread.is_alive())
+        recovered.release.assert_called_once()
+
+    def test_temporarily_unavailable_device_retries_and_shutdown_stops_retries(self):
+        capture = Mock()
+        capture.isOpened.return_value = False
+        camera = Camera('0')
+        with patch('cv2.VideoCapture', return_value=capture) as open_camera, \
+                patch('granny.camera.RECONNECT_DELAY_SECONDS', .03):
+            camera.start()
+            try:
+                self.assertTrue(wait_until(lambda: open_camera.call_count >= 2, timeout=.5))
+            finally:
+                camera.close()
+            count = open_camera.call_count
+            time.sleep(.06)
+            self.assertEqual(open_camera.call_count, count)
+        self.assertFalse(camera.thread.is_alive())
+
+    def test_video_file_still_stops_at_end_instead_of_looping(self):
+        camera = Camera('recorded-test-video.mp4')
+        with patch.object(camera, '_open_video') as open_video:
+            camera.start()
+            camera.thread.join(timeout=.5)
+            try:
+                self.assertFalse(camera.thread.is_alive())
+                open_video.assert_called_once()
+            finally:
+                camera.close()
 
 
 if __name__ == "__main__":

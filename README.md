@@ -367,6 +367,8 @@ See [Twilio test credentials](https://www.twilio.com/docs/iam/test-credentials),
 - “No,” negated reassurance, or a request for help escalates. So does expiration of the response deadline.
 - Camera loss alone does not indicate a fall. Tracking loss after sustained fall evidence starts a voice check;
   an active check continues if camera frames stop arriving.
+- Built-in/USB cameras reopen automatically after an open/read failure, just as network cameras do.
+  Failed frames disappear from the live preview; recorded video files still stop at the end.
 - An alert stays latched until **R** is pressed. Previously sent messages cannot be recalled.
 - Alerts have persistent IDs and are not automatically retried after an uncertain network failure.
 - A failed recipient does not block other recipients. “Accepted by Telegram” is not proof of human receipt.

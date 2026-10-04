@@ -20,6 +20,7 @@ class Camera:
         self.source = int(source) if str(source).isdigit() else str(source)
         self.network = (isinstance(self.source, str)
                         and urlsplit(self.source).scheme.lower() in {"http", "https", "rtsp", "rtsps", "udp"})
+        self.reconnect = self.network or isinstance(self.source, int)
         self.snapshot = (self.network and urlsplit(self.source).scheme.lower() in {"http", "https"}
                          and urlsplit(self.source).path.rstrip('/') == '/capture')
         self._snapshot_timestamp = None
@@ -50,7 +51,9 @@ class Camera:
                     self._open_video(cv2)
             except Exception as exc:
                 self._unavailable(f"Camera failed ({type(exc).__name__})")
-            if not self.network or self._stop.wait(RECONNECT_DELAY_SECONDS):
+            # Built-in/USB cameras can fail a read after a transient macOS
+            # interruption too. Reopen devices, but let recorded files end.
+            if not self.reconnect or self._stop.wait(RECONNECT_DELAY_SECONDS):
                 return
 
     def _open_video(self, cv2):
@@ -135,7 +138,7 @@ class Camera:
 
     def _unavailable(self, message):
         with self._lock:
-            if self.network:
+            if self.reconnect:
                 # Incident photos are held by the controller. A disconnected
                 # camera must not expose its previous frame as a live picture.
                 self.frame = None
